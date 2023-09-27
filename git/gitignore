@@ -1,0 +1,21 @@
+# Temporary files
+
+\*~
+.DS_Store
+Thumbs.db
+.vagrant/
+.ignore/
+.idea/
+.vscode/
+.node-version
+
+# Package Manager
+
+node_modules/
+/vendor/bundle/
+/.bundle/
+
+# Docker
+
+localhost.pem
+localhost-key.pem

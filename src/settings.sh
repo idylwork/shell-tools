@@ -1,38 +1,20 @@
-# DNSキャッシュ
-alias dig='dig @8.8.8.8'
+# シェルの基本設定ファイル
+# エイリアスと表示設定
 
-# コマンド検索パス (echo $PATHで:区切りに出力)
-#export PATH="$HOME/bin:$PATH"
-export PATH=$PATH:/usr/local/bin:/usr/local/Cellar/nkf/2.1.3/bin/nkf
-
-# Ggrep
-PATH="/usr/local/opt/grep/libexec/gnubin:$PATH"
-MANPATH="/usr/local/opt/grep/libexec/gnuman:$MANPATH"
-
-# 追加スクリプトの読み込み
-[ -f ~/.zsh/index.sh ] && source ~/.zsh/index.sh
-
-# グローバルエイリアス
-alias -g L='| less'
-alias -g H='| head'
-alias -g G='| grep'
-alias -g GI='| grep -ri'
-
-# 基本コマンドのカスタマイズ
+# 基本コマンドのエイリアス
 alias ..='cd ../'
-alias rmt='rmtrash'
 alias rm='rm -i'
 alias mv='mv -i'
 alias cp='cp -i'
-alias lst='ls -ltrG'
-alias l='ls -ltrG'
-alias la='ls -laG'
-alias ll='ls -lG'
+alias ll='ls -lohpTSG'
+alias la='ls -alhpTSG | awk '\''BEGIN{FS=" \+"};/^total/{print};!/^total/{printf("%-11s %2s %-4s %5s% 6s %4d-%02d-%02d %8s %s\n",$1,$2,$3,$4,$5,$9,$6,$7,$8,$10)}'\'''
 alias vi='vim'
 alias history='fc -lt '%F %T' 1'
 alias mkdir='mkdir -p'
 alias back='pushd'
 alias diff='diff -U1'
+# ドメインの問い合わせにGoogle Public DNSを使用する
+alias dig='dig @8.8.8.8'
 
 # バックスペースを正常化
 #stty erase "^?"
@@ -127,16 +109,6 @@ zstyle ":chpwd:*" recent-dirs-default true
 autoload -Uz zmv
 alias zmv='noglob zmv -W'
 
-# mkdirとcdを同時実行
-function mkcd() {
-  if [[ -d $1 ]]; then
-    echo "$1 already exists!"
-    cd $1
-  else
-    mkdir -p $1 && cd $1
-  fi
-}
-
 # Git設定
 RPROMPT="%{${fg[blue]}%}[%~]%{${reset_color}%}"
 autoload -Uz vcs_info
@@ -149,18 +121,5 @@ zstyle ':vcs_info:*' actionformats '[%b|%a]'
 precmd () { vcs_info }
 RPROMPT=$RPROMPT'${vcs_info_msg_0_}'
 
-# rbenv (Ruby version manager)
-#rehashをスキップして高速化
-#eval "$(rbenv init -)" > /dev/null 2>&1
-export PATH="${HOME}/.rbenv/shims:${PATH}"
-export RBENV_SHELL=zsh
-source '/usr/local/Cellar/rbenv/1.2.0/libexec/../completions/rbenv.zsh'
-eval "$(command rbenv init -)"
-
-# nodenv (Node version manager)
-export PATH="$HOME/.nodenv/bin:$PATH"
-eval "$(nodenv init -)"
-
-# yvm (Yarn version manager)
-export YVM_DIR=/usr/local/opt/yvm
-[ -r $YVM_DIR/yvm.sh ] && . $YVM_DIR/yvm.sh
+# Docker
+alias doc='docker compose'

@@ -1,0 +1,101 @@
+#!/bin/sh
+#
+# 引数なしの"git commit"で呼び出される
+# "0"以外のステータスを返すとコミットを中断する
+
+# localでない関数の戻り値が0以外だった場合に強制中断
+set -e
+
+git_hook_process() {
+  # 定数の読み込み
+  source ~/.zsh/src/constants.sh
+  local result
+  local is_error=false
+
+  if git rev-parse --verify HEAD >/dev/null 2>&1; then
+    local against=HEAD
+  else
+    # イニシャルコミット
+    local against=$(git hash-object -t tree /dev/null)
+  fi
+
+  # ファイル名に半角文字以外を使用できるようにするか
+  local allownonascii=$(git config --type=bool hooks.allownonascii)
+
+  # コミット対象ファイル (削除ファイル以外)
+  local filenames=$(git diff --cached --name-only --diff-filter=d ${against})
+
+  # ファイル名に半角文字以外が使われていないか
+  if [ "$allownonascii" != "true" ] && test $(echo ${filenames} | LC_ALL=C tr -d '[ -~]\n' | wc -c) != 0; then
+    printf $TEXT_DANGER 'Attempt to add a non-ASCII file name.'
+    printf $TEXT_WARNING 'If you know what you are doing you can disable this check using:'
+    printf $TEXT_WARNING '  git config hooks.allownonascii true'
+    local is_error=true
+  fi
+
+  # 全コードファイル共通の禁則文字列
+  local common_pattern=(${EMOJI_CHARS[*]})
+
+  # デバッグコードが含まれていないか
+  for filename in $filenames; do
+    local extension=${filename##*.}
+    case ${extension} in
+    # 拡張子なしのファイル
+    ${filename} )
+      local pattern=();;
+    # 画像ファイルは検証をスキップ
+    jpg|jpeg|png|gif|svg )
+      continue;;
+    # JavaScript
+    js|jsx|ts|tsx )
+      local pattern=("console.log");;
+    # PHP
+    php )
+      local pattern=("var_dump");;
+    * )
+      local pattern=();;
+    esac
+
+    # 条件を正規表現に変換して増分検索
+    [ ${#pattern[@]} -ne 0 ] && pattern=(${pattern[*]} ${common_pattern[*]}) || pattern=(${common_pattern[*]})
+    local match=$(git diff --cached --diff-filter=d -U0 ${filename} | tail -n +5 | grep "^+" | grep -E $(IFS="|"; echo "${pattern[*]}"))
+
+    # マッチした行があればエラー
+    if [ -n "$match" ]; then
+      printf $TEXT_DANGER "Debugging code detected!"
+      printf $TEXT_WARNING "${filename}"
+      printf $TEXT_WARNING "${match[*]}"
+      local is_error=true
+    fi
+
+    # ファイル末尾が改行されているか
+    if [ -n "$(cat $filename | tail -c1)" ]; then
+      printf $TEXT_MUTED "No newline at end of file. ${filename}:$(cat $filename | wc -l | sed -e 's/ //g')"
+    fi
+  done
+
+  # 空白行がないか (`core.whitespace`の設定に依存)
+  # whitespace_error=$(git diff-index --check --cached $against --)
+  # if [ -n "$whitespace_error" ]; then
+  #   printf $TEXT_WARNING "${whitespace_error}"
+  #   local is_error=true
+  # fi
+
+  # エラーがあればコミット中断
+  if [ "${is_error}" == "true" ]; then
+    echo ""
+    printf $TEXT_WARNING "Commit blocked by pre-commit hook! You can disable this check using:"
+    echo ""
+    printf $TEXT_WARNING "  git commit --no-verify"
+    echo ""
+
+    # 強制中断
+    result=$(false)
+  else
+    result=$(true)
+  fi
+}
+
+# 関数実行でエラーが戻らなければ成功ステータスを返してコミットを進める
+git_hook_process
+exit 0
