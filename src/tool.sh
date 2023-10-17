@@ -2,8 +2,11 @@
 #emulate -R sh
 
 # toコマンドの定義
-
-to() {
+# 処理はサブシェルで実行
+# @exit 0 成功
+# @exit 1 失敗
+# @exit 2 追加処理あり
+to() {(
 # 定数の読み込み
 source ~/.zsh/src/constants.sh
 
@@ -15,7 +18,6 @@ source $FUNCTIONS_PATH
 local action=$1
 local -A args=($(parse_arguments ${@:2}))
 local -A options=(${(kv)args})
-unset arguments_all
 
 # --help オプションが指定された場合はヘルプメッセージを表示して完了
 if [[ -n "${options[help]}" ]]; then
@@ -26,7 +28,6 @@ fi
 # プロジェクト定数
 local -r PROJECT_DIR=$(get_project_root)
 local -r PROJECT_NAME=$(basename ${PROJECT_DIR})
-local -r VAGRANT_DIR="${PROJECT_DIR}/vagrant/"
 source <(parse_ini ${SCRIPT_DIR}/config/projects.ini --section=default | sed "s/^ */local /g")
 source <(parse_ini ${SCRIPT_DIR}/config/projects.ini --section=${PROJECT_NAME} | sed "s/^ */local /g")
 
@@ -77,6 +78,29 @@ test )
     echo "  ${arg_key} = ${args[${arg_key}]}"
   done
   echo ""
+
+  ## --color 文字装飾見本を追加表示する
+  if [ -n "${args[color]}" ]; then
+    printf $TEXT_INFO "Colors:"
+
+    echo "  ${COLOR_SUCCESS}COLOR_SUCCESS${COLOR_RESET}"
+    echo "  ${COLOR_DANGER}COLOR_DANGER${COLOR_RESET}"
+    echo "  ${COLOR_WARNING}COLOR_WARNING${COLOR_RESET}"
+    echo "  ${COLOR_NOTICE}COLOR_NOTICE${COLOR_RESET}"
+    echo "  ${COLOR_INFO}COLOR_INFO${COLOR_RESET}"
+    echo "  ${COLOR_INFO_DARK}COLOR_INFO_DARK${COLOR_RESET}"
+    echo "  ${COLOR_MUTED}COLOR_MUTED${COLOR_RESET}"
+
+    for i in {0..49}; do
+      if [[ $(($i % 10)) == 0 ]]; then
+        echo -n "\n  "
+      fi
+
+      local code=$((i++))
+      echo -n "\x1b[${code}m${code}${COLOR_RESET} ";
+    done
+    echo "\n"
+  fi
 ;;
 
 ## [sync] スクリプトと設定ファイルをエクスポートする
@@ -97,6 +121,10 @@ sync )
   ls )
     ls -lohpTSG $SCRIPT_DIR
     ;;
+  ## [sync diff] エクスポートされている設定ファイルとの差分を表示
+  diff )
+    diff -r ${SCRIPT_DIR} ${EXPORT_DIR} | sed "s/^\(-\{1,3\} .*\)$/${COLOR_DANGER}\1${COLOR_RESET}/" | sed "s/^\(+\{1,3\} .*\)$/${COLOR_SUCCESS}\1${COLOR_RESET}/"
+    ;;
   * )
     printf $TEXT_WARNING "シェルスクリプトの設定ファイルをエクスポートしますか？ (y/n)"
     printf $TEXT_WARNING "${SCRIPT_DIR} > ${EXPORT_DIR}"
@@ -111,21 +139,20 @@ sync )
 ## [bash] Dockerに接続してシェルを起動
 bash )
   [ ${args[1]} ] && local container=${args[1]} || local container='web'
-  printf $TEXT_INFO_DARK "Start connecting on ${container}... (docker compose exec -it ${container} bash)"
+  printf $TEXT_INFO "Start connecting on ${container}... (docker compose exec -it ${container} bash)"
   docker compose exec -it ${container} bash
 ;;
 
 ## [note] メモファイルの表示
 note )
-  local note_file="${SCRIPT_DIR}/note.txt"
+  local note_file="${SCRIPT_DIR}/config/note.txt"
   case $args[1] in
   edit )
     vi ${note_file}
     ;;
   * )
-    printf $TEXT_SUCCESS "──────────────────────"
-    printf $TEXT_SUCCESS "     Script Note      "
-    printf $TEXT_SUCCESS "──────────────────────"
+    print_heading "Script Note"
+
     cat ${note_file}
     echo ""
   esac
@@ -160,7 +187,7 @@ doc|docker )
   ### [doc bash] 起動中のコンテナに接続する
   bash )
     [ ${args[2]} ] && local container=${args[2]} || local container='web'
-    printf $TEXT_INFO_DARK "Start connecting on ${container}..."
+    printf $TEXT_INFO "Start connecting on ${container}..."
     docker compose exec -it ${container} bash
     ;;
   esac
@@ -179,28 +206,22 @@ edit )
 
 ## [refresh] スクリプトと設定の変更を反映
 refresh )
-  source ${TOOL_SCRIPT}
-  printf $TEXT_SUCCESS "Tool script is refreshed."
+  printf $TEXT_SUCCESS "Tool script is refreshing..."
+
+  # 再読み込みはサブシェル外で実行する
+  exit 2 &> /dev/null
 ;;
 
 ## [git] Gitクライアントを開く
 git )
-  local remote_params=$(git remote -v | sed -n -e 1p)
-  if [[ $remote_params =~ '^origin.*https://' ]]; then
-    local url=$(echo $remote_params | grep -oe "https://.*\.git" | sed "s|\.git|/${query}|")
-  else
-    local url="https://github.com/$(echo $remote_params | grep -oe "[a-zA-Z-]*/.*\.git" | sed "s|\.git|/${query}|")"
-  fi
-
   case $args[1] in
-  ### [git] リポジトリの状況をアプリケーションで表示
   ''|tree|t )
     printf $TEXT_INFO 'Start openning repository on git client…'
     open -a $APP_GIT_CLIENT $PROJECT_DIR
     ;;
   ### [git i] GitHubのIssuesページを開く
   issue|is|i )
-    open -a $BROWSER "${url}/issues"
+    open -a $BROWSER "$(github_url)/issues"
     ;;
   ### [git p] GitHubのPull sRequestsページを開く
   pulls|pr|p )
@@ -275,19 +296,19 @@ git )
   stash )
     git stash --include-untracked
   ;;
+  ### [git newpr] 新規にプルリクエストを作成する (開発中)
   newpr )
     local branch_name=$(git rev-parse --abbrev-ref HEAD)
     local branch_name="Y_CENTER-771"
-    open "${url}/compare/${branch_name}?expand=1"
+    open "$(github_url)/compare/${branch_name}?expand=1"
     sleep 1
-
 
     # browser_selector_input '[name="pull_request[title]"]' "タイトル"
     # sleep 1
     browser_selector_input '[name="pull_request[body]"]' "ファンクション2"
   ;;
   * )
-    open -a $BROWSER ${url}
+    open -a $BROWSER $(github_url)
   esac
 ;;
 
@@ -317,7 +338,7 @@ rename )
   declare -A new_names
 
   for file in ${files}; do
-    printf $TEXT_INFO_DARK "${file} >>"
+    printf $TEXT_INFO "${file} >>"
     read new_name
     new_names[$file]=$new_name
   done
@@ -341,16 +362,16 @@ rename )
   esac
 ;;
 
-# [mkdir] ディレクトリを作成して移動
+## [mkdir <directory>] ディレクトリを作成する
 mkdir )
-  local dir=$args[1]
-  if [[ -d $dir ]]; then
-    echo "${dir} already exists!"
-    cd $dir
+  ## --path パスを出力する
+  if [ -n "${args[path]}" ]; then
+    echo $args[1];
   else
-    mkdir -p $dir
-    cd $dir &> /dev/null
-    ls -l ..
+    mkdir -p ${args[1]}
+    printf $TEXT_SUCCESS "Successfully created directory."
+    # ディレクトリ移動はサブシェル外で実行する
+    exit 2 &> /dev/null
   fi
 ;;
 
@@ -425,7 +446,7 @@ dist )
   * )
     rm -rf ${DEST_DIR} &> /dev/null
     mkdir ${DEST_DIR}
-    cd "${WORKSPACE}/${PROJECT_NAME}/" &> /dev/null
+    cd "${PROJECT_DIR}/" &> /dev/null
 
     ### [dist copy] 実行せずコマンドをコピーする
     if [ "$args[1]" = "copy" ]; then
@@ -615,8 +636,6 @@ vagrant )
   * )
     vagrant ${args}
   esac
-
-  cd -
 ;;
 
 ## [db] 仮想マシンのSQLに接続する
@@ -657,14 +676,14 @@ bl )
   case $args[1] in
   ### [bl <number>] 現在ブランチ名に応じて課題を開く
   [0-9]* )
-    open "https://hotfactory.backlog.jp/view/${BACKLOG_PREFIX}-$2"
+    open "https://hotfactory.backlog.jp/view/${BACKLOG_PREFIX}-${args[1]}"
     ;;
   ### [bl ls] Backlog課題一覧を開く
-  ls )
+  ls | l* )
     open "https://hotfactory.backlog.jp/find/${BACKLOG_PREFIX}"
     ;;
   ### [bl wiki] BacklogのWikiホームを開く
-  wiki )
+  wiki | w* )
     open "https://hotfactory.backlog.jp/wiki/${BACKLOG_PREFIX}/Home"
     ;;
   ### [bl set <project_id>] Backlog課題番号とブランチ名の対応リストを追加する
@@ -685,14 +704,15 @@ bl )
 
     if [ -n "$stored_task_id" ]; then
       # iniに設定されたブランチがあれば課題を開く
-      printf $TEXT_INFO_DARK "Found a backlog task relation. [${branch_name} → ${stored_task_id}]"
+      printf $TEXT_INFO "Found a backlog task relation. [${branch_name} → ${stored_task_id}]"
       open "https://hotfactory.backlog.jp/view/${stored_task_id}"
     elif [[ $branch_name == "${BACKLOG_PREFIX}-"* ]]; then
       # Backlog課題形式のブランチ名であれば課題を開く
+      printf $TEXT_INFO "Open backlog project... (${branch_name})"
       open "https://hotfactory.backlog.jp/view/${branch_name}"
     else
       # 一致しなければ課題一覧を開く
-      printf $TEXT_INFO_DARK "Open backlog project"
+      printf $TEXT_INFO "Open backlog projects index..."
       open "https://hotfactory.backlog.jp/find/${BACKLOG_PREFIX}"
     fi
     ;;
@@ -748,43 +768,9 @@ pmlog )
   fi
 ;;
 
-## [..] プロジェクトルートに移動
-.. )
-  cd ${PROJECT_DIR}
-;;
-
-## [ws <directory>] プロジェクトルートに移動する 引数分ディレクトリを深掘りして曖昧検索する
-ws )
-  if [ -z "${args}" ]; then
-    cd $WORKSPACE &> /dev/null
-    ls
-  else
-    local project_path=$WORKSPACE
-    local project_name=""
-
-    for arg in ${args}; do
-      # 前方一致
-      local prefix_regex="^${arg}.*"
-      # 前方スネークケース
-      local snake_regex="^$(echo ${arg} | sed 's|.|&_*|g')"
-      # あいまい検索
-      local fuzzy_regex="^$(echo ${arg} | sed 's|.|&.*|g')"
-
-      # まず前方一致で確認、一致がない場合はあいまい検索で検索で再検索
-      local target_dir=$(ls $project_path | grep -s -m1 $prefix_regex)
-      if [ -z $target_dir ]; then
-        target_dir=$(ls $project_path | grep -s -m1 $snake_regex)
-      fi
-      if [ -z $target_dir ]; then
-        target_dir=$(ls $project_path | grep -s -m1 $fuzzy_regex)
-      fi
-      project_name=$target_dir
-      project_path+="/${target_dir}"
-    done
-
-    printf $TEXT_INFO "Project: ${project_name}"
-    cd ${project_path} &> /dev/null
-  fi
+## [dir <directory> <name>] ディレクトリ内の子ディレクトリを曖昧検索してパスを出力する 引数分ディレクトリを深掘りする
+dir )
+  project_root_in_workspace ${@:2}
 ;;
 
 ## [telescope] Laravel Telescopeをブラウザで開く
@@ -794,17 +780,103 @@ telescope )
   open_in_browser "$(project_origin)/telescope/queries" ${browser_options}
 ;;
 
+## [swift] Swift関連のコマンド群
+swift )
+  case $args[1] in
+  ### [swift color <color_code>] 16進カラーコードをSwift形式に変換
+  ### --digits=<number> 少数点桁数
+  color )
+    local code=$(echo ${args[2]} | sed 's/^#//')
+
+    # カラーコードが6桁でなければエラー
+    if [[ $(echo -n $code | wc -c | xargs) != 6 ]]; then
+      printf $TEXT_DANGER "Color code must be specified in 6 digits."
+      return
+    fi
+
+    local digits=${args[digits]:=3}
+    local red=$(printf "%.$((${digits} - 1))f" $((16#${code:0:2} * 10**${digits} / 255 * 0.001 )))
+    local green=$(printf "%.$((${digits} - 1))f" $((16#${code:2:2} * 10**${digits} / 255 * 0.001 )))
+    local blue=$(printf "%.$((${digits} - 1))f" $((16#${code:4:2} * 10**${digits} / 255 * 0.001 )))
+    printf $TEXT_SUCCESS "Color(red: ${red}, green: ${green}, blue: ${blue})"
+  esac
+;;
+
 ## [help] ヘルプメッセージを表示
 help | '' )
   print_help
+;;
+
+## [rm] ファイルやディレクトリをゴミ箱に入れる
+rm )
+  local trash_dir="${HOME}/.Trash"
+
+  ## --revert 削除したファイルをカレントディレクトリに戻す (ファイル名重複未対応)
+  if [ -n "${args[revert]}" ]; then
+    for arg_key in ${(k)args[@]}; do
+      if [[ "$arg_key" =~ ^[0-9]+$ ]]; then
+        local arg=$args[$arg_key]
+        # ゴミ箱の中に重複するファイル名がある場合は時間を付加する
+        if [ -e "${arg}" ]; then
+          printf $TEXT_DANGER "File already exists. (${arg})"
+          return
+        fi
+
+        local target="${trash_dir}/$(basename ${arg})"
+        if [ -d "${target}" ]; then
+          mv ${target} ${arg}
+          printf $TEXT_SUCCESS "Successfly revert directory. (~/.Trash/$(basename ${arg}) > ${arg})"
+          ll -d ${arg}
+        elif [ -f "${target}" ]; then
+          mv ${target} ${arg}
+          printf $TEXT_SUCCESS "Successfly revert file. (~/.Trash/$(basename ${arg}) > ${arg})"
+          ll ${arg}
+        else
+          printf $TEXT_DANGER "File or directory not exists. (${target})"
+        fi
+      fi
+    done
+  else
+    for arg in ${args[@]}; do
+      # ゴミ箱の中に重複するファイル名がある場合は時間を付加する
+      [ -e "${trash_dir}/${arg}" ] && local filename="$(basename ${arg}) $(date +%y.%m.%d)" || local filename="$(basename ${arg})"
+
+      if [ -d "${arg}" ]; then
+        mv ${arg} "${trash_dir}/${filename}"
+        printf $TEXT_SUCCESS "Successfly removed directory. (${filename} > ~/.Trash/${filename})"
+      elif [ -f "${arg}" ]; then
+        mv ${arg} "${trash_dir}/${filename}"
+        printf $TEXT_SUCCESS "Successfly removed file. (${filename} > ~/.Trash/${filename})"
+      else
+        printf $TEXT_DANGER "File or directory not exists. (${arg})"
+      fi
+    done
+  fi
+;;
+
+## [..] プロジェクトルートに移動
+.. )
+  ## --path パスを出力する
+  if [ -n "${args[path]}" ]; then
+    echo $PROJECT_DIR;
+    return
+  fi
+  # ディレクトリ移動はサブシェル外で実行する
+  exit 2 &> /dev/null
 ;;
 
 ## [<etc>] アクション名が一致しなかった場合は追加のアクションを読み込み
 * )
   local addition_path="${SCRIPT_DIR}/config/addon.sh"
   [ -f "${addition_path}" ] && source ${addition_path}
-esac # Actions
+esac)
 
-# 最後に関数をすべて削除
-unset_functions
+# サブシェル終了後のメインシェル処理 (終了コード2の場合)
+local exit_code=$?
+if [[ ${exit_code} == 2 ]]; then
+  case $1 in
+  refresh ) source ~/.zsh/src/tool.sh ;;
+  mkdir | .. ) cd $(to $@ --path) &> /dev/null ;;
+  esac
+fi
 }

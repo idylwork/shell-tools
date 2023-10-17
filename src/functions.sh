@@ -60,6 +60,35 @@ parse_arguments() {
   done
 }
 
+# ワークスペース基準でプロジェクトルートのパスをあいまい検索する
+# @param string $1 ベースディレクトリ
+# @param string $2 あいまい検索文字列 (引数追加でディレクトリを深掘り)
+# @returns string プロジェクトルートパス
+project_root_in_workspace() {
+  local project_path=$1
+
+  # まず前方一致で確認、一致がない場合はあいまい検索で検索で再検索しながら引数の数だけ深掘りしていく
+  # if [ ${#} != 0 ]; then
+    for arg in ${@:2}; do
+      # 前方一致
+      local prefix_regex="^${arg}.*"
+      local target_dir=$(ls $project_path | grep -s -m1 $prefix_regex)
+      if [ -z $target_dir ]; then
+        # 前方スネークケース
+        local snake_regex="^$(echo ${arg} | sed 's|.|&_*|g')"
+        local target_dir=$(ls $project_path | grep -s -m1 $snake_regex)
+      fi
+      if [ -z $target_dir ]; then
+        # あいまい検索
+        local fuzzy_regex="^$(echo ${arg} | sed 's|.|&.*|g')"
+        local target_dir=$(ls $project_path | grep -s -m1 $fuzzy_regex)
+      fi
+      project_path+="/${target_dir}"
+    done
+  # fi
+  echo ${project_path}
+}
+
 # プロジェクトルートパスを取得 (GitルートかWorkspace直下をルートとする)
 get_project_root() {
   local current_dir=$(pwd)
@@ -254,7 +283,7 @@ check_config_exists() {
 
 # Vagrantfileのディレクトリに移動
 cd_vagrant() {
-  cd "${VAGRANT_DIR}" &> /dev/null
+  cd "$(get_project_root)/vagrant/" &> /dev/null
 }
 
 # 仮想マシンのファイルを監視する
@@ -302,10 +331,11 @@ project_origin() {
   local|* )
     if [[ "$VM_PLATFORM" == "vagrant" ]]; then
       # Vagrant
+      cd_vagrant
       [ "$VAGRANT_SSH_PROTOCOL" = "true" ] && local protocol='https' || local protocol='http'
-      local hostname="$(grep '.vm.network :private_network, ip: "*"' ${VAGRANT_DIR}Vagrantfile | grep -o '\d\+.\d\+.\d\+.\d\+')"
+      local hostname="$(grep '.vm.network :private_network, ip: "*"' ./Vagrantfile | grep -o '\d\+.\d\+.\d\+.\d\+')"
       if [ -z "$hostname" ]; then
-        local hostname="$(grep '.vm.network \"private_network\", ip: \"*\"' ${VAGRANT_DIR}Vagrantfile | grep -o '\d\+.\d\+.\d\+.\d\+')"
+        local hostname="$(grep '.vm.network \"private_network\", ip: \"*\"' ./Vagrantfile | grep -o '\d\+.\d\+.\d\+.\d\+')"
       fi
       echo "${protocol}://${hostname}"
     else
@@ -355,6 +385,19 @@ open_in_browser() {
   open -a $browser ${args[1]}
 }
 
+# カレントディレクトリのGithubのURLを出力する
+# @returns string GithubのURL
+github_url() {
+  local remote_params=$(git remote -v 2> /dev/null | sed -n -e 1p)
+  if [ -z "$remote_params" ]; then
+    echo "https://github.com"
+  elif [[ $remote_params =~ '^origin.*https://' ]]; then
+    echo $remote_params | grep -oe "https://.*\.git" | sed "s|\.git|/${query}|"
+  else
+    echo "https://github.com/$(echo $remote_params | grep -oe "[a-zA-Z-]*/.*\.git" | sed "s|\.git|/${query}|")"
+  fi
+}
+
 # Search pull requests by branch numbers
 open_git_pulls() {
   local remote_params=$(git remote -v | sed -n -e 1p)
@@ -380,6 +423,22 @@ open_git_pulls() {
   open -a $BROWSER "${url}/${query}"
 }
 
+# 見出しを出力する
+# @param string $1 見出し内容
+print_heading() {
+  local text="${@}"
+  local padding=6
+  local divider_char="─"
+  local divider_length=$((${#text} + $padding * 2))
+
+  printf "${COLOR_SUCCESS}${divider_char}%.s${COLOR_RESET}" {1..${divider_length}}
+  echo ""
+  printf " %.s${COLOR_RESET}" {1..${padding}}
+  printf $TEXT_SUCCESS ${text}
+  printf "${COLOR_SUCCESS}${divider_char}%.s${COLOR_RESET}" {1..${divider_length}}
+  echo ""
+}
+
 # ヘルプメッセージを表示する
 # @param string $1 アクション名 (未指定ですべてのヘルプを表示)
 print_help() {
@@ -392,9 +451,7 @@ print_help() {
     local message=$(cat $TOOL_SCRIPT | grep "^\s*#\{2,\}" | grep -v '^\s*## sh')
   fi
 
-  printf $TEXT_SUCCESS "──────────────────────"
-  printf $TEXT_SUCCESS " Personal Tool Script "
-  printf $TEXT_SUCCESS "──────────────────────"
+  print_heading "Personal Tool Script"
   echo $message |
     sed -e "s/^ *#\{3,\} /  /g" | # インデントを調整してコメントアウトを削除
     sed -e "s/^ *## //g" | # コメントアウトを削除
