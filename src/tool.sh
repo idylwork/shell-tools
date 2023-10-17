@@ -27,7 +27,6 @@ fi
 local -r PROJECT_DIR=$(get_project_root)
 local -r PROJECT_NAME=$(basename ${PROJECT_DIR})
 local -r VAGRANT_DIR="${PROJECT_DIR}/vagrant/"
-
 source <(parse_ini ${SCRIPT_DIR}/config/projects.ini --section=default | sed "s/^ */local /g")
 source <(parse_ini ${SCRIPT_DIR}/config/projects.ini --section=${PROJECT_NAME} | sed "s/^ */local /g")
 
@@ -78,9 +77,6 @@ test )
     echo "  ${arg_key} = ${args[${arg_key}]}"
   done
   echo ""
-
-  local store_ini="${SCRIPT_DIR}/config/store.ini"
-  set_ini "112234" ${store_ini} --section=backlog_task_id
 ;;
 
 ## [sync] スクリプトと設定ファイルをエクスポートする
@@ -144,7 +140,7 @@ doc|docker )
     printf $TEXT_SUCCESS "Docker will restart."
     ;;
   ### [doc ls] Dockerの動作状況を確認
-  ls|list )
+  ls|list|'' )
     local -r color_reset="\x1b[0m"
     docker ps -a --format "table 　{{.Names}} ({{.ID}})\t{{.Status}}\t{{.Size}}" \
      | sed -r "s/^　(.* Created .*)$/🌱${COLOR_SUCCESS}\1${COLOR_RESET}/g" \
@@ -326,7 +322,7 @@ rename )
     new_names[$file]=$new_name
   done
 
-  for old_name in "${(k)new_names[@]}"; do
+  for old_name in "${(ko)new_names[@]}"; do
     local new_name=$new_names[$old_name];
     [ "$old_name" = "$new_name" ] && local text_color=$TEXT_MUTED || local text_color=$TEXT_SUCCESS
     printf $text_color "${old_name} >> ${new_name}"
@@ -336,7 +332,7 @@ rename )
   read answer
   case $answer in
   y)
-    for old_name in "${(k)new_names[@]}"; do
+    for old_name in "${(ko)new_names[@]}"; do
       mv -f $old_name $new_names[${old_name}]
     done
     printf $TEXT_SUCCESS "Renamed!"
@@ -656,7 +652,7 @@ log )
 bl )
   [ -v $BACKLOG_PREFIX ] && printf $TEXT_DANGER "Backlog prefix is not configured." && return
   local store_ini="${SCRIPT_DIR}/config/store.ini"
-  local store_key_prefix="backlog_task_id__${PROJECT_NAME}_"
+  local store_key_prefix="${PROJECT_NAME}_"
 
   case $args[1] in
   ### [bl <number>] 現在ブランチ名に応じて課題を開く
@@ -677,8 +673,7 @@ bl )
       local branch_name=$(git rev-parse --abbrev-ref HEAD)
       local backlog_task_id="${BACKLOG_PREFIX}-${args[2]}"
 
-      sed -i".org" -e "/${store_key_prefix}${branch_name} = /d" $store_ini
-      echo "${store_key_prefix}${branch_name} = ${backlog_task_id}" >> $store_ini
+      set_ini "${store_key_prefix}${branch_name} = ${backlog_task_id}" ${store_ini} --section=backlog_task_id
       echo "Backlog課題番号を登録しました。[${branch_name} → ${backlog_task_id}]"
     else
       echo "Backlog課題番号を指定してください"
@@ -690,7 +685,7 @@ bl )
 
     if [ -n "$stored_task_id" ]; then
       # iniに設定されたブランチがあれば課題を開く
-      printf $TEXT_INFO_DARK "Open related backlog task. [${branch_name} → ${stored_task_id}}]"
+      printf $TEXT_INFO_DARK "Found a backlog task relation. [${branch_name} → ${stored_task_id}]"
       open "https://hotfactory.backlog.jp/view/${stored_task_id}"
     elif [[ $branch_name == "${BACKLOG_PREFIX}-"* ]]; then
       # Backlog課題形式のブランチ名であれば課題を開く

@@ -13,9 +13,13 @@ parse_environment() {
 }
 
 # 引数とオプションを読み取り連想配列として返す
+# zshの連想配列の使用上、受け取り項目が分割されてしまうため、複数行やスペースを含む引数には対応していません
+# evalを使用すると受け取ることができます
 # @param string $@ 全引数
 # @returns (string=string) 数字のキーに引数、文字列のキーにオプション
-# @example local -A args=($(parse_arguments ${@}))
+# @example
+#   local -A args=($(parse_arguments ${@}))
+#   eval "local -A args=($(parse_arguments ${@}))"
 parse_arguments() {
   local index=1
   local -A options=()
@@ -56,60 +60,24 @@ parse_arguments() {
   done
 }
 
-# オプションを除外した引数を読み取る
-# @param string $@ 全引数
-parse_arguments_array() {
-  local -a args=()
-  for i in $(seq $#); do
-    local arg=${${@}[$i]}
-    case $arg in
-      - )
-        # 配列一つ目の要素がハイフンだと無視されるため対処
-        [[ $i == 1 ]] && args+='- -' || args+='-'
-        ;;
-      --*|-*) ;;
-      * ) args+=${arg} ;;
-    esac
-  done
-  echo ${args}
-}
-
-# オプションを読み取る
-# @param string $@ 全引数
-parse_options() {
-  local -A options=()
-  for i in $(seq $#); do
-    local arg=${${@}[$i]}
-    case $arg in
-      - )
-        ;;
-      --*)
-        local option_text=${arg#--}
-        [[ ${option_text} == *=* ]] && options[${option_text%=*}]=${option_text#*=} || options[${option_text}]=1
-        ;;
-      -* )
-        local option_text=${arg#-}
-        [[ ${option_text} == *=* ]] && options[${option_text%=*}]=${option_text#*=} || options[${option_text}]=1
-        ;;
-    esac
-  done
-
-  local hash_text=''
-  for key in "${(k)options[@]}"; do
-    local hash_text="${hash_text}\n${key} ${options[${key}]}"
-  done
-  echo -e $hash_text
-}
-
-# プロジェクトルートパスを取得 (Workspace直下か.gitのあるディレクトリをルートとする)
+# プロジェクトルートパスを取得 (GitルートかWorkspace直下をルートとする)
 get_project_root() {
   local current_dir=$(pwd)
-  local project_name=$(echo ${current_dir} | sed -e "s|${WORKSPACE}/\([^/]*\).*$|\1|")
 
-  if [[ "$project_name" != $(basename ${current_dir}) ]] && [ -e ".git" ]; then
-    echo ${current_dir}
+  local git_root=$(git rev-parse --show-toplevel 2> /dev/null)
+  if [ -n "${git_root}" ]; then
+    # Gitの設定があればGitのルートディレクトリ
+    echo ${git_root}
   else
-    echo "${WORKSPACE}/${project_name}"
+    case ${current_dir} in
+    ${WORKSPACE}/* )
+      # ワークスペース配下ならとりあえず直下として扱う
+      local dir_name=$(echo ${current_dir} | sed -e "s|${WORKSPACE}/\([^/]*\).*$|\1|")
+      echo "${WORKSPACE}/${dir_name}"
+      ;;
+    * )
+      echo ${current_dir}
+    esac
   fi
 }
 
@@ -149,16 +117,17 @@ parse_ini() {
   fi
 }
 
+# INIファイルに項目を追加する
 # @param string $1 追記内容
 # @param string $2 INIファイルパス
 # @option --section=<string> 対象とするセクション名 (未指定の場合は全項目)
+# @example
 set_ini() {
   local -A args=($(parse_arguments ${@}))
+
+  # セクションの終わりの行を特定する
   local lines=$(cat ${args[2]} | grep -n "\[.*\]")
-
   local target=0
-
-  # TODO: grep_after -> grep に変更する
   if [ -n "$args{1}" ]; then
     local is_matched=false
     while read line; do
@@ -168,20 +137,28 @@ set_ini() {
       fi
 
       local section=$(echo ${line#*:} | sed "s/^\[\(.*\)\]$/\1/")
-      if [[ "${section}" == "$args[section]" ]]; then
+      if [[ "${section}" == "${args[section]}" ]]; then
         local is_matched=true
       fi
     done <<< "${lines}"
   fi
 
-  if [[ target > 0 ]]; then
+  if [[ ${target} > 0 ]]; then
+    # 空白行を保持
+    while [ -z "$(cat ${args[2]} | sed -n $((target - 1))P)" ]; do
+      cat ${args[2]} | sed -n $((target - 1))P
+      target=$((target - 1))
+    done
+
+    # セクション最後尾に書き込み
     sed -i "" -e "$(cat <<- EOF
     ${target}i\\
-		${args[1]}
+		$1
 		EOF
     )" ${args[2]}
   else
-    echo ${args[1]} >> ${args[2]}
+    # ファイル末尾に書き込み
+    echo $1 >> ${args[2]}
   fi
 }
 

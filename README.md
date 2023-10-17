@@ -1,6 +1,8 @@
-## 導入方法
+## 利用方法
 
 ### シェルスクリプト
+
+#### 導入
 
 [index.sh](./index.sh) を読み込むことで各コマンドが追加されます。
 
@@ -10,17 +12,35 @@
 `~/.zshrc`などに以下のコードを追加します。
 .zshrc に関する他の設定は[zshrc_sample](./sample/zshrc_sample)を参照してください。
 
-```
+```sh
 [ -f ~/.zsh/index.sh ] && source ~/.zsh/index.sh
 ```
 
+#### 利用
+
+ヘルプメッセージを参照してください。
+
+```sh
+: ZSH設定の再読み込み
+source ~/.zshrc
+
+: ヘルプメッセージの表示
+to help
+```
+
 ### Git 設定
+
+#### 導入
 
 [gitconfig_sample.ini](./sample/gitconfig_sample) の設定を反映することで Git にさまざまな設定が追加されます。
 
 - `gitignore` グローバルな Gitignore 設定
 - `pre-commit` コミット時、変更点にデバッグコードが含まれる場合はコミットを中止する
 - その他設定
+
+#### 利用
+
+Git の挙動がすべてのリポジトリで変更されるため、特別な操作は不要です。
 
 ## ディレクトリ構成
 
@@ -44,14 +64,14 @@
 
 以下のライブラリを導入しています。
 
+- git
 - nodenv
-- yvm
 
 ## シェルスニペット
 
 時々使用するスニペットをここに記載しておきます。
 
-```
+```sh
 : 1時間以内に更新されたファイル
 sudo find . -mmin -60 -type f | xargs ls -l {}
 
