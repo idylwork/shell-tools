@@ -60,33 +60,37 @@ parse_arguments() {
   done
 }
 
-# ワークスペース基準でプロジェクトルートのパスをあいまい検索する
+# 第1引数をベースにディレクトリパスをあいまい検索する
 # @param string $1 ベースディレクトリ
 # @param string $2 あいまい検索文字列 (引数追加でディレクトリを深掘り)
-# @returns string プロジェクトルートパス
-project_root_in_workspace() {
-  local project_path=$1
+# @returns string ディレクトリパス
+fuzzy_dir_search() {
+  local target_path=$1
 
-  # まず前方一致で確認、一致がない場合はあいまい検索で検索で再検索しながら引数の数だけ深掘りしていく
-  # if [ ${#} != 0 ]; then
-    for arg in ${@:2}; do
-      # 前方一致
-      local prefix_regex="^${arg}.*"
-      local target_dir=$(ls $project_path | grep -s -m1 $prefix_regex)
-      if [ -z $target_dir ]; then
-        # 前方スネークケース
-        local snake_regex="^$(echo ${arg} | sed 's|.|&_*|g')"
-        local target_dir=$(ls $project_path | grep -s -m1 $snake_regex)
-      fi
-      if [ -z $target_dir ]; then
-        # あいまい検索
-        local fuzzy_regex="^$(echo ${arg} | sed 's|.|&.*|g')"
-        local target_dir=$(ls $project_path | grep -s -m1 $fuzzy_regex)
-      fi
-      project_path+="/${target_dir}"
-    done
-  # fi
-  echo ${project_path}
+  # まず前方一致で確認、一致がない場合は条件をあいまいにして再検索しながら引数の数だけ深掘りしていく
+  for arg in ${@:2}; do
+    # 前方一致
+    local prefix_regex="^${arg}.*"
+    local next_dir=$(ls $target_path | grep -s -m1 $prefix_regex)
+    # 前方スネークケース
+    if [ -z $next_dir ]; then
+      local snake_regex="^$(echo ${arg} | sed 's|.|&_*|g')"
+      local next_dir=$(ls $target_path | grep -s -m1 $snake_regex)
+    fi
+    # 前方あいまい検索
+    if [ -z $next_dir ]; then
+      local fuzzy_regex="^$(echo ${arg} | sed 's|.|&.*|g')"
+      local next_dir=$(ls $target_path | grep -s -m1 $fuzzy_regex)
+    fi
+    # あいまい検索
+    if [ -z $next_dir ]; then
+      local fuzzy_regex="$(echo ${arg} | sed 's|.|&.*|g')"
+      local next_dir=$(ls $target_path | grep -s -m1 $fuzzy_regex)
+    fi
+
+    target_path+="/${next_dir}"
+  done
+  echo ${target_path}
 }
 
 # プロジェクトルートパスを取得 (GitルートかWorkspace直下をルートとする)
@@ -199,26 +203,6 @@ browser_keydown() {
   osascript -e "tell application \"${BROWSER}\" to activate" -e "tell application \"System Events\" to keystroke $1"
 }
 
-# ブラウザで文字列を入力する
-# @param string $1 入力するキー
-# @example browser_input "password"
-browser_input() {
-  browser_keydown "\"$1\""
-}
-
-# @param string $1 CSSセレクタ
-# @param string $2 入力値
-browser_input_new() {
-  browser_javascript $(cat <<- 'EOS'
-    console.info('Apple Event', document.forms[0].login_id.value);
-    document.querySelector(arguments[0]).focus();
-    document.querySelector(arguments[0]).select();
-	EOS
-  )
-
-  # browser_input $2
-}
-
 browser_javascript() {
   osascript -l JavaScript -e "function run(arguments) {
     const safari = Application('Safari');
@@ -226,21 +210,47 @@ browser_javascript() {
   }" $1
 }
 
+# ブラウザで文字列を入力する (マルチバイト非対応)
+# @param string $1 入力するキー
+# @example browser_input "password"
+browser_input() {
+  browser_keydown "\"$1\""
+}
+
+# ブラウザで文字列を入力する
+# @param string $1 入力値
+# @param integer $2 タブ回数
+browser_input_new() {
+  if [ -n "$2" ]; then
+    for i in {1..$2}; do
+      browser_keydown 'tab'
+    done
+  fi
+
+  sleep 1
+  echo $1 | pbcopy
+  browser_keydown '"a" using {command down}'
+  browser_keydown '"v" using {command down}'
+}
+
+# セレクタからDOM要素を検索してテキストを取得
+# @param string $1 CSSセレクタ
+browser_find_element() {
+  osascript -l JavaScript -e "function run(arguments) {
+    const safari = Application('Safari');
+    return safari.doJavaScript(arguments[0], { in: safari.windows.at(0).currentTab }) ?? '';
+  }" "result = document.querySelector('$1').innerText"
+}
+
+## ブラウザでセレクタを入力
 browser_selector_input() {
-  for i in {1..10}; do
-    browser_keydown 'tab'
-  done
-
-  browser_keydown 'tab'
-  browser_keydown 'tab'
-
-  browser_javascript $(cat <<- EOS
-    console.log(document.querySelector('${1}'));
-    document.querySelector('${1}').focus();
-    document.querySelector('${1}').select();
-	EOS
-  )
-  sleep 2
+  # browser_javascript $(cat <<- EOS
+  #   console.log(document.querySelector('${1}'));
+  #   document.querySelector('${1}').focus();
+  #   document.querySelector('${1}').select();
+	# EOS
+  # )
+  # sleep 1
 
   echo $2 | pbcopy
   browser_keydown '"a" using {command down}'
@@ -472,5 +482,5 @@ grep_after() {
 
 # 関数をすべて削除
 unset_functions() {
-  unset -f $(cat $FUNCTIONS_PATH | grep -E '^[a-zA-Z_]+\(\) \{' | sed -e 's|^\(.*\)() {.*|\1|' | xargs -L 1)
+  unset -f $(cat $FUNCTIONS_PATH | grep -E '^ *[a-zA-Z_]+\(\) \{' | sed -e 's|^\(.*\)() {.*|\1|' | xargs -L 1)
 }

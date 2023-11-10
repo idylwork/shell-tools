@@ -147,6 +147,7 @@ bash )
 note )
   local note_file="${SCRIPT_DIR}/config/note.txt"
   case $args[1] in
+  ### [note edit] メモファイルを編集
   edit )
     vi ${note_file}
     ;;
@@ -299,17 +300,40 @@ git )
   ### [git newpr] 新規にプルリクエストを作成する (開発中)
   newpr )
     local branch_name=$(git rev-parse --abbrev-ref HEAD)
-    local branch_name="Y_CENTER-771"
-    open "$(github_url)/compare/${branch_name}?expand=1"
-    sleep 1
+    if [[ $branch_name == "${BACKLOG_PREFIX}-"* ]]; then
+      # Backlog課題形式のブランチ名であれば課題名を取得
+      open "https://hotfactory.backlog.jp/view/${branch_name}"
+      sleep 4
+      local task_name=$(browser_find_element '#summary')
+    fi
 
-    # browser_selector_input '[name="pull_request[title]"]' "タイトル"
-    # sleep 1
-    browser_selector_input '[name="pull_request[body]"]' "ファンクション2"
+    open "$(github_url)/compare/${branch_name}?expand=1"
+    sleep 4
+    browser_input_new "${branch_name} ${task_name}"
+    if [ -n "${task_name}" ]; then
+      browser_input_new "## Backlog\nhttps://hotfactory.backlog.jp/view/${branch_name}\n\n## 対応内容\n" 1
+    else
+      browser_input_new "## 対応内容\n" 1
+    fi
   ;;
   * )
     open -a $BROWSER $(github_url)
   esac
+;;
+
+## [forcepull] リモートブランチでローカルブランチを上書きする
+forcepull )
+  local branch_name=$(git rev-parse --abbrev-ref HEAD)
+  local base_commit=$(git merge-base ${BASE_BRANCH} HEAD)
+  git log --oneline --graph $base_commit..HEAD
+
+  printf $TEXT_DANGER "Would you like to overwrite ${branch_name}? (y/n)"
+  read answer
+
+  if [ "$answer" = "y" ]; then
+    git fetch origin
+    git reset --hard "origin/${branch_name}"
+  fi
 ;;
 
 ## [<number>] 番号から規定のブランチをチェックアウトする
@@ -382,6 +406,25 @@ open )
   open_in_browser "$(project_origin $args[1])${URL_FRONT}" ${browser_options}
 ;;
 
+## [jstest] テストコード (TODO: 動作確認が終わり次第削除)
+jstest )
+  local branch_name=$(git rev-parse --abbrev-ref HEAD)
+  open "https://github.com/HOT-FACTORY/fv-app-ios/compare/${branch_name}?expand=1"
+  sleep 1
+
+  local selector="pull_request[title]"
+  browser_javascript $(cat <<- EOS
+    console.log(document.querySelector('${selector}'));
+    document.querySelector('${selector}').focus();
+    document.querySelector('${selector}').select();
+	EOS
+  )
+  sleep 1
+
+  browser_keydown '"a" using {command down}'
+  browser_input 'testdaze'
+;;
+
 ## [admin <environment>] Webサイトの管理画面を開く
 ## --alt 規定でないブラウザで開く
 admin )
@@ -438,7 +481,7 @@ dist )
     tree -a "${DEST_DIR}"
     ;;
   ### [dist rm] ファイル削除
-  rm)
+  rm )
     rm -rf ${DEST_DIR} &> /dev/null
     mkdir ${DEST_DIR} &> /dev/null
     printf $TEXT_WARNING "distフォルダを削除しました"
@@ -491,6 +534,7 @@ deploy )
     ### [deploy production] 本番サーバーにdistフォルダをリリースする (未実装)
     production )
       # /tmpディレクトリ固定のためファイルパスチェックなし
+      echo $MESSAGE_PRODUCTION_ACCESS
       ;;
     ### [deploy staging] ステージングサーバーにdistフォルダをリリースする
     staging )
@@ -503,7 +547,6 @@ deploy )
   if check_config_exists; then
     printf $TEXT_WARNING "設定ファイルが含まれています！"
   else
-    [ "$env" = "production" ] && printf $TEXT_DANGER "- DEPLOY TO PRODUCTION !!"
     if [ "$2" = "-y" ]; then
       local answer="y"
     else
@@ -552,6 +595,7 @@ build )
   esac
 ;;
 
+## [selenium] テストコード (TODO: 動作確認が終わり次第削除)
 selenium )
   if type chromedriver > /dev/null 2>&1; then
     curl -X POST -H 'Content-Type: application/json' \
@@ -564,27 +608,32 @@ selenium )
   fi
 ;;
 
-## [ssh | ssh <environment>] SSH接続してアプリケーションルートに移動する
+## [ssh <environment>] SSH接続してアプリケーションルートに移動する
 ssh )
-  case $args[1] in
-  ### [ssh staging] 接続先を指定する
-  staging|s )
-    #[ -v SSH_NAME_STAGING ] && printf $TEXT_DANGER "SSH name is not configured. (${env})" && return
-    printf $TEXT_SUCCESS "Connecting to ${PROJECT_NAME} [staging]... (${APP_ROOT})"
+  local env=$(parse_environment $args[1])
+  printf $TEXT_INFO "Connecting to ${PROJECT_NAME} application root... (${env})"
+
+  case $env in
+  production )
+    [ -v $SSH_NAME_PRODUCTION ] && printf $TEXT_DANGER "SSH name is not configured. (${PROJECT_NAME} / ${env})" && return 1
+    echo $MESSAGE_PRODUCTION_ACCESS
+    ssh ${SSH_NAME_PRODUCTION} -t "cd ${APP_ROOT}; bash --login"
+    ;;
+  staging )
+    [ -v $SSH_NAME_STAGING ] && printf $TEXT_DANGER "SSH name is not configured. (${PROJECT_NAME} / ${env})" && return 1
     ssh ${SSH_NAME_STAGING} -t "cd ${APP_ROOT}; bash --login"
     ;;
-  * )
-    printf $TEXT_SUCCESS "Connecting to ${PROJECT_NAME} [local]... (${APP_ROOT})"
+  local )
     cd_vagrant
     vagrant ssh -c 'cd "/var/www/$(ls /var/www | more)"; bash --login'
     ;;
   esac
 ;;
 
-## [sshkey <ssh_name>]
+## [sshkey <ssh_name>] 公開鍵をサーバーに設定する
 sshkey )
   if [ -z "${args[1]}" ]; then
-    printf $TEXT_WARNING "引数1にSSH接続名を指定してください。"
+    printf $TEXT_ARGUMENT_ERROR "sshkey <ssh_name>"
     return
   fi
 
@@ -657,9 +706,11 @@ aws )
 ## [log <environment>] ログファイルを表示する
 log )
   case $(parse_environment $args[1]) in
-  production ) local domain="${DOMAIN_PRODUCTION}" ;;
+  production )
+    ssh -t ${SSH_NAME_PRODUCTION} "tail -f ${LOG_PRODUCTION}"
+    ;;
   staging )
-    ssh -t ${SSH_NAME_STAGING} "tail -f ${LOG_PRODUCTION}" | ccze -A
+    ssh -t ${SSH_NAME_STAGING} "tail -f ${LOG_PRODUCTION}"
     ;;
   local )
     [ $# = 2 ] && local filepath="$2" || local filepath="${LOG_LOCAL}"
@@ -741,21 +792,6 @@ new )
   echo "ブランチ『${branch_name}』を作成しました"
 ;;
 
-## [forcepull] リモートブランチでローカルブランチを上書きする
-forcepull )
-  local branch_name=$(git rev-parse --abbrev-ref HEAD)
-  local base_commit=$(git merge-base ${BASE_BRANCH} HEAD)
-  git log --oneline --graph $base_commit..HEAD
-
-  printf $TEXT_DANGER "Would you like to overwrite ${branch_name}? (y/n)"
-  read answer
-
-  if [ "$answer" = "y" ]; then
-    git fetch origin
-    git reset --hard "origin/${branch_name}"
-  fi
-;;
-
 ## [pmlog] システムのスリープ履歴を表示
 pmlog )
   ## -a ディスプレイの電源切り替えも表示する
@@ -768,9 +804,9 @@ pmlog )
   fi
 ;;
 
-## [dir <directory> <name>] ディレクトリ内の子ディレクトリを曖昧検索してパスを出力する 引数分ディレクトリを深掘りする
-dir )
-  project_root_in_workspace ${@:2}
+## [ws <name>] ワークスペースディレクトリ内を曖昧検索してパスを出力する 引数分ディレクトリを深掘りする
+ws )
+  fuzzy_dir_search ${WORKSPACE} ${@:2}
 ;;
 
 ## [telescope] Laravel Telescopeをブラウザで開く
@@ -780,7 +816,7 @@ telescope )
   open_in_browser "$(project_origin)/telescope/queries" ${browser_options}
 ;;
 
-## [swift] Swift関連のコマンド群
+## [swift <command>] Swift関連のコマンド群
 swift )
   case $args[1] in
   ### [swift color <color_code>] 16進カラーコードをSwift形式に変換
@@ -790,7 +826,7 @@ swift )
 
     # カラーコードが6桁でなければエラー
     if [[ $(echo -n $code | wc -c | xargs) != 6 ]]; then
-      printf $TEXT_DANGER "Color code must be specified in 6 digits."
+      printf $TEXT_ARGUMENT_ERROR "to swift color <color_code> / Color code must be specified in 6 digits."
       return
     fi
 
@@ -799,20 +835,92 @@ swift )
     local green=$(printf "%.$((${digits} - 1))f" $((16#${code:2:2} * 10**${digits} / 255 * 0.001 )))
     local blue=$(printf "%.$((${digits} - 1))f" $((16#${code:4:2} * 10**${digits} / 255 * 0.001 )))
     printf $TEXT_SUCCESS "Color(red: ${red}, green: ${green}, blue: ${blue})"
+    ;;
+  * )
+    printf $TEXT_ARGUMENT_ERROR "to swift <command>"
   esac
 ;;
 
-## [help] ヘルプメッセージを表示
-help | '' )
-  print_help
+## [timer] 経過時間計測を開始する
+timer )
+  ## --clear タイマーを全削除する
+  if [ -n "$args[clean]" ]; then
+    # タイマー判別のため、小数点5位までゼロを指定しておく
+    ps | grep "sleep [0-9]\+.00000" | awk '{print $1}' | xargs kill -9
+    return
+  fi
+
+  if [ -z "$args[1]" ]; then
+    local start=$(date +%s)
+
+    printf $TEXT_INFO "Press Control + C to stop the timer."
+    while true; do
+      local end=$(date +%s)
+      local timestamp=$((${end} - ${start}))
+      local minutes=$((${timestamp} / 60))
+      local seconds=$((${timestamp} % 60))
+      printf "\rPassed: %3s:%02d secs" ${minutes} ${seconds}
+      [ $minutes -ge 1000 ] && break
+      sleep 1
+    done
+    return 1
+  fi
+
+  ### [timer <time> <message>] 指定時刻もしくは一定時間のタイマーをセットする
+  if [[ ${args[1]} == *:* ]]; then
+    local target=$(date -jf "%H:%M:%S" "${args[1]}:00" +%s)
+    local now=$(date +%s)
+    local seconds=$((${target} - ${now}))
+
+    # 過ぎた時刻なら翌日のタイムスタンプに変更
+    if [ ${seconds} -lt 0 ]; then
+      local seconds=$((${seconds} + 86400))
+    fi
+
+    [ -n "${args[2]}" ] && local message=${args[2]} || local message="タイマーが終了しました ($(date -jf "%s" ${target} +%H:%M))"
+  else
+    # 相対時間で指定
+    local quantity=$(echo ${args[1]} | sed 's/^\([0-9]*\).*$/\1/')
+    case $(echo ${args[1]} | sed 's/^[0-9]*//') in
+    h|hour|hours )
+      [[ ${seconds} > 1 ]] && local unit="hours" || local unit="hour"
+      local seconds=$((${quantity} * 60))
+      ;;
+    m|min|minute|minutes )
+      [[ ${seconds} > 1 ]] && local unit="minutes" || local unit="minute"
+      local seconds=$((${quantity} * 60))
+      ;;
+    s|sec|second|seconds|'' )
+      [[ ${seconds} > 1 ]] && local unit="seconds" || local unit="second"
+      local seconds=${quantity}
+      ;;
+    * )
+      printf $TEXT_WARNING "引数が正しくありません"
+      return 1
+    esac
+
+    [ -n "${args[2]}" ] && local message=${args[2]} || local message="タイマーが終了しました (${quantity} ${unit} from $(date +%H:%M))"
+  fi
+
+  if [ ${seconds} -gt 10800 ]; then
+    printf $TEXT_ARGUMENT_ERROR "The timer for no more than 3 hours"
+    return 2
+  fi
+
+  # タイマーを登録
+  (
+    sleeptool
+    osascript -e "display notification \"${message}\" with title \"Tool Script\""
+  ) &
+  printf $TEXT_SUCCESS "The timer has been set. (${message})"
 ;;
 
 ## [rm] ファイルやディレクトリをゴミ箱に入れる
 rm )
   local trash_dir="${HOME}/.Trash"
 
-  ## --revert 削除したファイルをカレントディレクトリに戻す (ファイル名重複未対応)
   if [ -n "${args[revert]}" ]; then
+    ## --revert 削除したファイルをカレントディレクトリに戻す (ファイル名重複未対応)
     for arg_key in ${(k)args[@]}; do
       if [[ "$arg_key" =~ ^[0-9]+$ ]]; then
         local arg=$args[$arg_key]
@@ -839,14 +947,17 @@ rm )
   else
     for arg in ${args[@]}; do
       # ゴミ箱の中に重複するファイル名がある場合は時間を付加する
-      [ -e "${trash_dir}/${arg}" ] && local filename="$(basename ${arg}) $(date +%y.%m.%d)" || local filename="$(basename ${arg})"
+      local filename=$(basename ${arg})
+      [ -e "${trash_dir}/${filename}" ] && local needsRename=true || local needsRename=false
+      $needsRename && local trashname="${filename} $(date +%y.%m.%d)" || local trashname="${filename}"
+      $needsRename && local result="${filename} > ~/.Trash/${trashname}" || local result="${filename}"
 
       if [ -d "${arg}" ]; then
-        mv ${arg} "${trash_dir}/${filename}"
-        printf $TEXT_SUCCESS "Successfly removed directory. (${filename} > ~/.Trash/${filename})"
+        mv ${arg} "${trash_dir}/${trashname}"
+        printf $TEXT_SUCCESS "Successfly removed directory. (${result})"
       elif [ -f "${arg}" ]; then
-        mv ${arg} "${trash_dir}/${filename}"
-        printf $TEXT_SUCCESS "Successfly removed file. (${filename} > ~/.Trash/${filename})"
+        mv ${arg} "${trash_dir}/${trashname}"
+        printf $TEXT_SUCCESS "Successfly removed file. (${result})"
       else
         printf $TEXT_DANGER "File or directory not exists. (${arg})"
       fi
@@ -863,6 +974,11 @@ rm )
   fi
   # ディレクトリ移動はサブシェル外で実行する
   exit 2 &> /dev/null
+;;
+
+## [help] ヘルプメッセージを表示
+help | '' )
+  print_help
 ;;
 
 ## [<etc>] アクション名が一致しなかった場合は追加のアクションを読み込み

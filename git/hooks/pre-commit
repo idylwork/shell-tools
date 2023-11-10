@@ -37,7 +37,8 @@ git_hook_process() {
   local common_pattern=(${EMOJI_CHARS[*]})
 
   # デバッグコードが含まれていないか
-  for filename in $filenames; do
+  (IFS=$'\n'; for filename in "$filenames"; do
+    printf $TEXT_DANGER "File: $filename"
     local extension=${filename##*.}
     case ${extension} in
     # 拡張子なしのファイル
@@ -72,7 +73,7 @@ git_hook_process() {
     if [ -n "$(cat $filename | tail -c1)" ]; then
       printf $TEXT_MUTED "No newline at end of file. ${filename}:$(cat $filename | wc -l | sed -e 's/ //g')"
     fi
-  done
+  done)
 
   # 空白行がないか (`core.whitespace`の設定に依存)
   # whitespace_error=$(git diff-index --check --cached $against --)

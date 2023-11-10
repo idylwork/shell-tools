@@ -11,5 +11,5 @@
 # ワークスペースに移動する
 # スペース区切りでディレクトリを深掘り
 ws() {
-  cd $(to dir ~/Workspace ${@}) &> /dev/null
+  cd $(to ws ${@}) &> /dev/null
 }

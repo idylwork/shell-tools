@@ -55,3 +55,7 @@ local -r EMOJI_CHARS=(
   "🔁" "🚫" "❎" "✅" "❌" "⭕" "❗" "❓" "❕" "❔" "🔃" "🔘" "🔗" "⬜" "⬛" "⚫" "⚪" "🔴" "🔵" "🔻"
   "🔶" "🔷" "🔸" "🔹"
 )
+
+# 汎用メッセージ
+local -r MESSAGE_PRODUCTION_ACCESS="${COLOR_DANGER}────────────────────────────────────\n⚠️  ACCESS TO PRODUCTION ENVIRONMENT!\n────────────────────────────────────${COLOR_RESET}"
+local -r TEXT_ARGUMENT_ERROR="${COLOR_DANGER}Wrong argument. (expected: %s)${COLOR_RESET}\n"
