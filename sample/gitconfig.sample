@@ -20,7 +20,7 @@
 	defaultBranch = main
 [commit]
   # コミットメッセージのデフォルト
-	template = ~/.zsh/git/stCommitMsg
+	template = ~/.zsh/git/commitMsg
 [push]
   # upstreamを指定しなくても同名ブランチとしてプッシュする
 	default = current

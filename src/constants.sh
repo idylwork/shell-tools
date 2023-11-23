@@ -1,5 +1,8 @@
 # スクリプト定数ファイル
 
+# 一時変数 (標準出力を伴う関数で戻り値を一時格納)
+local FUNCTION_RETURN=""
+
 # ファイルパス
 local -r WORKSPACE="${HOME}/Workspace"
 local -r SCRIPT_DIR="${HOME}/.zsh"
@@ -29,6 +32,12 @@ local -r TEXT_SUCCESS="${COLOR_SUCCESS}%s\n${COLOR_RESET}"
 local -r TEXT_INFO="${COLOR_INFO}%s\n${COLOR_RESET}"
 local -r TEXT_INFO_DARK="${COLOR_INFO_DARK}%s\n${COLOR_RESET}"
 local -r TEXT_MUTED="${COLOR_MUTED}%s\n${COLOR_RESET}"
+
+# 終了コード
+local -r EXIT_CODE_SUCCESS=0
+local -r EXIT_CODE_ERROR=1
+local -r EXIT_CODE_WITH_ADDITION=10
+local -r EXIT_CODE_ACTION_NOT_FOUND=27
 
 # デバッグコードが含まれていないか
 local -r EMOJI_CHARS=(

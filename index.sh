@@ -1,4 +1,3 @@
-
 # 用例: .zshrcファイルに組み込み
 # [ -f ~/.zsh/index.sh ] && source ~/.zsh/index.sh
 

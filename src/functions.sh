@@ -160,38 +160,52 @@ set_ini() {
 
   # セクションの終わりの行を特定する
   local lines=$(cat ${args[2]} | grep -n "\[.*\]")
-  local target=0
+  local section_start=0
+  local section_end=0
   if [ -n "$args{1}" ]; then
     local is_matched=false
     while read line; do
       if "${is_matched}"; then
-        local target=${line%%:*}
+        local section_end=${line%%:*}
         break
       fi
 
       local section=$(echo ${line#*:} | sed "s/^\[\(.*\)\]$/\1/")
       if [[ "${section}" == "${args[section]}" ]]; then
+        local section_start=${line%%:*}
         local is_matched=true
       fi
     done <<< "${lines}"
   fi
 
-  if [[ ${target} > 0 ]]; then
-    # 空白行を保持
-    while [ -z "$(cat ${args[2]} | sed -n $((target - 1))P)" ]; do
-      cat ${args[2]} | sed -n $((target - 1))P
-      target=$((target - 1))
-    done
+  # 次のセクションが見つからなければファイル末尾に書き込み
+  if [[ ${section_end} == 0 ]]; then
+    section_end=$(cat ${args[2]} | wc -l | sed -e 's/ //g')
+  fi
 
-    # セクション最後尾に書き込み
+  # 空白行を無視
+  while [ -z "$(cat ${args[2]} | sed -n $((section_end - 1))P)" ]; do
+    cat ${args[2]} | sed -n $((section_end - 1))P
+    section_end=$((section_end - 1))
+  done
+
+  local section_text=$(sed -n $((section_start + 1)),${section_end}p ${args[2]})
+  local duplicate_offset=$(echo ${section_text} | awk '{print $0}' | grep -n "^yokohama_spo_v_dev *= *" | head -1 | sed "s/^\([0-9]\{1,\}\).*$/\1/")
+  if [ ${duplicate_offset} ]; then
+    # すでにキーがある場合は行を上書き
+    local target_row=$((duplicate_offset + section_start))
     sed -i "" -e "$(cat <<- EOF
-    ${target}i\\
+    ${target_row}c\\
 		$1
 		EOF
     )" ${args[2]}
   else
-    # ファイル末尾に書き込み
-    echo $1 >> ${args[2]}
+    # セクション最後尾に書き込み
+    sed -i "" -e "$(cat <<- EOF
+    ${section_end}i\\
+		$1
+		EOF
+    )" ${args[2]}
   fi
 }
 
@@ -351,7 +365,7 @@ project_origin() {
     else
       # Docker
       local expose=443
-      local port=$(docker ps -alq --filter "expose=${expose}" | xargs docker inspect -f "{{ (index (index .NetworkSettings.Ports \"${expose}/tcp\") 0).HostPort }} {{ .HostConfig.Binds }}" | grep ${PROJECT_DIR} | sed 's/ .*//')
+      local port=$(docker ps -q --filter "expose=${expose}" | xargs docker inspect -f "{{ (index (index .NetworkSettings.Ports \"${expose}/tcp\") 0).HostPort }} {{ .HostConfig.Binds }}" | grep ${PROJECT_DIR} | sed 's/ .*//')
 
       echo "https://localhost:${port}"
     fi
@@ -455,7 +469,7 @@ print_help() {
   if [ -n "$1" ]; then
     # 特定アクションのコメント (次のコマンドまでの間のコメントを抽出)
     local code=$(grep_after "^\s*#\{2,\} \[${1}.*\]" $TOOL_SCRIPT)
-    local message="$(echo $code | head -n 1)\n$(echo $code | tail -n +2 | grep '^\s*##'| sed -n '/^## \[/q;p' )"
+    local message="$(echo $code | head -n 1)\n$(echo -E $code | tail -n +2 | grep '^\s*##'| sed -n '/^## \[/q;p' )"
   else
     # 全ヘルプコメント
     local message=$(cat $TOOL_SCRIPT | grep "^\s*#\{2,\}" | grep -v '^\s*## sh')
@@ -467,6 +481,70 @@ print_help() {
     sed -e "s/^ *## //g" | # コメントアウトを削除
     sed -e "s/^\( *-\{1,2\}[a-z][a-z-]*\)\(.*\)/  ${COLOR_NOTICE}\1\2${COLOR_RESET}/g" | # オプションを書式調整
     sed -e "s/\[\(.*\)\]/${COLOR_WARNING}\1${COLOR_RESET}/g" # []を着色
+}
+
+# OK・Cancelの選択を受け付ける
+# `set -e`が有効ならコマンド単体使用でOKでないときは中断
+# @returns OKなら終了ステータス0、Cancelなら終了ステータス1
+# @example read_confirmation || return 1
+read_confirmation() {
+  read_selection Cancel OK
+  local answer=${FUNCTION_RETURN}
+
+  case $answer in
+  OK ) return $EXIT_CODE_SUCCESS;;
+  Cancel ) return $EXIT_CODE_ERROR;;
+  esac
+}
+
+# 選択表示
+# @param string $@ 選択肢 (1つしかなければ選択肢を表示しない)
+# @returns $FUNCTION_RETURN 選択した項目が格納される
+# @example read_selection ls diff export import && local result=${FUNCTION_RETURN}
+read_selection() {
+  local items=(${@})
+  local current_index=1
+
+  if [ ${#items[@]} -le 1 ]; then
+    FUNCTION_RETURN=${items[1]}
+    return
+  fi
+
+  # 項目選択の表示更新
+  render_selection() {
+    echo -n "\r"
+    local index=0
+    for item in "${items[@]}"; do
+      index=$((${index} + 1))
+      if [[ $index == $current_index ]]; then
+        echo -n "${COLOR_SUCCESS}➣ "
+      else
+        echo -n "${COLOR_MUTED}  "
+      fi
+      echo -n "${item}${COLOR_RESET}  "
+    done
+  }
+
+  local keycode
+  while ((render_selection) &) && IFS= read -r -k1 -s keycode && [[ -n "$keycode" ]]; do
+    if [[ $keycode == $'\x1b' ]]; then
+      read -r -k2 -s rest
+      keycode+="$rest"
+    fi
+    case $keycode in
+    $'\x1b\x5b\x44' | $'\x1b\x5b\x41' ) # Left or Up
+      [[ $current_index > 1 ]] && current_index=$((current_index - 1)) || current_index=${#items[@]}
+      ;;
+    $'\x1b\x5b\x43' | $'\x1b\x5b\x42' ) # Right or Down
+      [[ ${current_index} < ${#items[@]} ]] && current_index=$((current_index + 1)) || current_index=1
+      ;;
+    $'\x0a' | $'\x20' ) # Enter or Space
+      echo ""
+      FUNCTION_RETURN=${items[${current_index}]}
+      break
+      ;;
+    esac
+  done
 }
 
 # 特定の文字列以降を取得する

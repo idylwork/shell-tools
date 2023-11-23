@@ -1,14 +1,17 @@
-## sh emulation mode
-#emulate -R sh
-
 # toコマンドの定義
 # 処理はサブシェルで実行
 # @exit 0 成功
 # @exit 1 失敗
-# @exit 2 追加処理あり
-to() {(
+# @exit $EXIT_CODE_WITH_ADDITION メインシェルで追加処理を実行
+# @exit 27 アクションが見つからない
+to() {
 # 定数の読み込み
 source ~/.zsh/src/constants.sh
+
+(
+# サブシェル内で関数の終了ステータスが0以外の場合はスクリプトを中断
+# サブシェル自体の戻り値は影響しない
+set -e
 
 # 関数の読み込み
 source $FUNCTIONS_PATH
@@ -103,44 +106,45 @@ test )
   fi
 ;;
 
-## [sync] スクリプトと設定ファイルをエクスポートする
+## [sync] スクリプトと設定ファイルの同期管理
 sync )
-  case $args[1] in
-  ### [sync import] スクリプトと設定ファイルをインポートする
-  import )
-    printf $TEXT_WARNING "シェルスクリプトの設定ファイルを上書きインポートしますか？ (y/n)"
-    printf $TEXT_WARNING "${EXPORT_DIR} > ${SCRIPT_DIR}"
-    read answer
-    if [ "$answer" = "y" ]; then
-      rsync -rcv "${EXPORT_DIR}/" $SCRIPT_DIR --exclude='.DS_Store' --exclude='/.git' -C --filter=":- .gitignore"
-      printf $TEXT_SUCCESS "シェルスクリプトを読み込みました"
-      printf $TEXT_SUCCESS "初回のみ.zshrcへの組み込みが必要です"
-    fi
-    ;;
+  local sub_action=${args[1]}
+  if [ -z "${sub_action}" ]; then
+    printf $TEXT_INFO "Choose sub action. [ls: ファイル一覧 diff: 差分一覧 export:同期保存 import:同期読み込み]"
+    read_selection ls diff export import && sub_action=${FUNCTION_RETURN}
+  fi
+
+  case ${sub_action} in
   ### [sync ls] 反映中スクリプトの確認
   ls )
     ls -lohpTSG $SCRIPT_DIR
     ;;
-  ## [sync diff] エクスポートされている設定ファイルとの差分を表示
+  ### [sync diff] エクスポートされている設定ファイルとの差分を表示
   diff )
     diff -r ${SCRIPT_DIR} ${EXPORT_DIR} | sed "s/^\(-\{1,3\} .*\)$/${COLOR_DANGER}\1${COLOR_RESET}/" | sed "s/^\(+\{1,3\} .*\)$/${COLOR_SUCCESS}\1${COLOR_RESET}/"
     ;;
-  * )
-    printf $TEXT_WARNING "シェルスクリプトの設定ファイルをエクスポートしますか？ (y/n)"
+  ### [sync export] スクリプトと設定ファイルをエクスポートする
+  export )
+    printf $TEXT_WARNING "シェルスクリプトの設定ファイルをエクスポートしますか？"
     printf $TEXT_WARNING "${SCRIPT_DIR} > ${EXPORT_DIR}"
-    read answer
-    if [ "$answer" = "y" ]; then
-      rsync -rcv "${SCRIPT_DIR}/" $EXPORT_DIR --exclude='.DS_Store' --exclude='/.git' -C --filter=":- .gitignore"
-      printf $TEXT_SUCCESS "シェルスクリプトを保存しました"
-    fi
-  esac
-;;
+    read_confirmation
 
-## [bash] Dockerに接続してシェルを起動
-bash )
-  [ ${args[1]} ] && local container=${args[1]} || local container='web'
-  printf $TEXT_INFO "Start connecting on ${container}... (docker compose exec -it ${container} bash)"
-  docker compose exec -it ${container} bash
+    rsync -rcv "${SCRIPT_DIR}/" $EXPORT_DIR --exclude='.DS_Store' --exclude='/.git' -C --filter=":- .gitignore"
+    printf $TEXT_SUCCESS "シェルスクリプトを保存しました"
+    ;;
+  ### [sync import] スクリプトと設定ファイルをインポートする
+  import )
+    printf $TEXT_WARNING "シェルスクリプトの設定ファイルを上書きインポートしますか？"
+    printf $TEXT_WARNING "${EXPORT_DIR} > ${SCRIPT_DIR}"
+    read_confirmation
+
+    rsync -rcv "${EXPORT_DIR}/" $SCRIPT_DIR --exclude='.DS_Store' --exclude='/.git' -C --filter=":- .gitignore"
+    printf $TEXT_SUCCESS "シェルスクリプトを読み込みました"
+    printf $TEXT_SUCCESS "初回のみ.zshrcへの組み込みが必要です"
+  ;;
+  * )
+    printf $TEXT_ARGUMENT_ERROR "sync <sub_action>"
+esac
 ;;
 
 ## [note] メモファイルの表示
@@ -169,7 +173,6 @@ doc|docker )
     ;;
   ### [doc ls] Dockerの動作状況を確認
   ls|list|'' )
-    local -r color_reset="\x1b[0m"
     docker ps -a --format "table 　{{.Names}} ({{.ID}})\t{{.Status}}\t{{.Size}}" \
      | sed -r "s/^　(.* Created .*)$/🌱${COLOR_SUCCESS}\1${COLOR_RESET}/g" \
      | sed -r "s/^　(.* Up .*)$/🌳\1/g" \
@@ -185,13 +188,28 @@ doc|docker )
       printf $TEXT_WARNING "No containers running."
     fi
     ;;
-  ### [doc bash] 起動中のコンテナに接続する
+  ### [doc bash <container>] Dockerコンテナに接続 (コンテナ未指定で選択)
   bash )
-    [ ${args[2]} ] && local container=${args[2]} || local container='web'
-    printf $TEXT_INFO "Start connecting on ${container}..."
-    docker compose exec -it ${container} bash
+    local container=${args[2]}
+    if [ ! ${container} ]; then
+      printf $TEXT_INFO "Choose docker container to connect."
+      read_selection $(docker compose config --services | tail -r) && local container=${FUNCTION_RETURN}
+    fi
+    printf $TEXT_INFO "Start connecting on ${container}... (docker compose exec -it ${container} bash --login)"
+    docker compose cp ${SCRIPT_DIR}/src/docker_profile.sh ${container}:/root/.bash_profile
+    docker compose exec -it -e PS1="\[\e[1;32m\][docker:${container}] \[\e[0;32m\]\W\[\e[m\] " ${container} bash --login
     ;;
   esac
+;;
+
+## [bash <contaner>] Dockerコンテナに接続 (コンテナ未指定で最初のコンテナ)
+bash )
+  local container=${args[2]}
+  if [ ! ${container} ]; then
+    container=$(docker compose config --services | tail -r | head -1)
+    printf $TEXT_INFO "Default container: ${container}"
+  fi
+  to doc bash ${container} ${@:3}
 ;;
 
 ## [edit] スクリプトと設定の編集
@@ -200,17 +218,33 @@ edit )
 
   ## --init スクリプトの初期設定
   if [ -n "$args[init]" ]; then
-    code --diff ${SCRIPT_DIR}/sample/zshrc_sample ~/.zshrc
-    code --diff ${SCRIPT_DIR}/sample/gitconfig_sample $(git config --global --list --show-origin --name-only | head -1 | sed 's/file:\(.*\)\t.*/\1/')
+    code --diff ${SCRIPT_DIR}/sample/zshrc.sample ~/.zshrc
+    echo "SCRIPT: ${SCRIPT_DIR}"
+
+    local filepaths=($(find ${SCRIPT_DIR}/sample/config -type f))
+    for filepath in "${filepaths[@]}"; do
+      local target_path="${SCRIPT_DIR}/config/$(basename ${filepath} | sed 's/\.sample$//')"
+      if [ -e "${target_path}" ]; then
+        printf $TEXT_MUTED "${target_path} (already exists)"
+      else
+        printf $TEXT_SUCCESS "${target_path} << ${filepath}"
+        cp ${filepath} ${target_path}
+      fi
+    done
   fi
 ;;
 
 ## [refresh] スクリプトと設定の変更を反映
 refresh )
-  printf $TEXT_SUCCESS "Tool script is refreshing..."
+  if [ -n "${args[path]}" ]; then
+    ## --path パスを出力する
+    echo ${TOOL_SCRIPT}
+  else
+    printf $TEXT_SUCCESS "Tool script is refreshing..."
 
-  # 再読み込みはサブシェル外で実行する
-  exit 2 &> /dev/null
+    # 再読み込みはサブシェル外で実行する
+    exit $EXIT_CODE_WITH_ADDITION &> /dev/null
+  fi
 ;;
 
 ## [git] Gitクライアントを開く
@@ -219,6 +253,11 @@ git )
   ''|tree|t )
     printf $TEXT_INFO 'Start openning repository on git client…'
     open -a $APP_GIT_CLIENT $PROJECT_DIR
+    ;;
+  ### [git init] Git設定ファイルを編集する
+  init )
+    code -n $SCRIPT_DIR
+    code --diff ${SCRIPT_DIR}/sample/gitconfig.sample $(git config --global --list --show-origin --name-only | head -1 | sed 's/file:\(.*\)\t.*/\1/')
     ;;
   ### [git i] GitHubのIssuesページを開く
   issue|is|i )
@@ -253,13 +292,11 @@ git )
     local base_commit=$(git merge-base ${BASE_BRANCH} HEAD)
     git log --oneline --graph $base_commit..HEAD
 
-    printf $TEXT_DANGER "Would you like to overwrite ${branch_name}? (y/n)"
-    read answer
+    printf $TEXT_DANGER "Would you like to overwrite ${branch_name}?"
+    read_confirmation
 
-    if [ "$answer" = "y" ]; then
-      git fetch origin
-      git reset --hard "origin/${branch_name}"
-    fi
+    git fetch origin
+    git reset --hard "origin/${branch_name}"
     ;;
   ### [git clean] マージされたブランチlogを一括削除
   ### --all ベースブランチを除外したすべてのブランチを対象とする
@@ -271,13 +308,12 @@ git )
     fi
     if [ -n "$branches" ]; then
       printf "${branches}\n"
-      printf $TEXT_WARNING "Would you like to remove merged branches? (y/n)"
-      read answer
-      if [ "$answer" = "y" ]; then
-        echo ${branches} | xargs git branch -d
-        git fetch --prune
-        printf $TEXT_SUCCESS "Merged branches removed!"
-      fi
+      printf $TEXT_WARNING "Would you like to remove merged branches?"
+      read_confirmation
+
+      echo ${branches} | xargs git branch -d
+      git fetch --prune
+      printf $TEXT_SUCCESS "Merged branches removed!"
     else
       printf $TEXT_WARNING "No merged branch."
     fi
@@ -287,17 +323,16 @@ git )
     local commit_message=$(git log --oneline | head -n 1 | sed "s|^[a-z0-9]* ||")
     printf $TEXT_WARNING $commit_message
     git status --porcelain | grep -v "^ "
-    printf $TEXT_DANGER "Would you like to override previous commit? (y/n)"
-    read answer
-    if [ "$answer" = "y" ]; then
-      git commit --amend -m $commit_message
-    fi
+    printf $TEXT_DANGER "Would you like to override previous commit?"
+    read_confirmation
+
+    git commit --amend -m $commit_message
   ;;
-  ### [git stash] 現在の変更点を一時退避する
+  ### [git stash] 現在の変更点を一時退避する (新規追加したファイルも含む)
   stash )
     git stash --include-untracked
   ;;
-  ### [git newpr] 新規にプルリクエストを作成する (開発中)
+  ### [git newpr] 新規にプルリクエストを作成する
   newpr )
     local branch_name=$(git rev-parse --abbrev-ref HEAD)
     if [[ $branch_name == "${BACKLOG_PREFIX}-"* ]]; then
@@ -315,7 +350,10 @@ git )
     else
       browser_input_new "## 対応内容\n" 1
     fi
-  ;;
+    ;;
+  log )
+    git log --graph --oneline --decorate
+    ;;
   * )
     open -a $BROWSER $(github_url)
   esac
@@ -327,13 +365,11 @@ forcepull )
   local base_commit=$(git merge-base ${BASE_BRANCH} HEAD)
   git log --oneline --graph $base_commit..HEAD
 
-  printf $TEXT_DANGER "Would you like to overwrite ${branch_name}? (y/n)"
-  read answer
+  printf $TEXT_DANGER "Would you like to overwrite ${branch_name}?"
+  read_confirmation
 
-  if [ "$answer" = "y" ]; then
-    git fetch origin
-    git reset --hard "origin/${branch_name}"
-  fi
+  git fetch origin
+  git reset --hard "origin/${branch_name}"
 ;;
 
 ## [<number>] 番号から規定のブランチをチェックアウトする
@@ -373,17 +409,13 @@ rename )
     printf $text_color "${old_name} >> ${new_name}"
   done
 
-  printf $TEXT_WARNING "Would you like to rename? (y/n)"
-  read answer
-  case $answer in
-  y)
-    for old_name in "${(ko)new_names[@]}"; do
-      mv -f $old_name $new_names[${old_name}]
-    done
-    printf $TEXT_SUCCESS "Renamed!"
-    ;;
-  *) ;;
-  esac
+  printf $TEXT_WARNING "Would you like to rename?"
+  read_confirmation
+
+  for old_name in "${(ko)new_names[@]}"; do
+    mv -f $old_name $new_names[${old_name}]
+  done
+  printf $TEXT_SUCCESS "Renamed!"
 ;;
 
 ## [mkdir <directory>] ディレクトリを作成する
@@ -395,7 +427,7 @@ mkdir )
     mkdir -p ${args[1]}
     printf $TEXT_SUCCESS "Successfully created directory."
     # ディレクトリ移動はサブシェル外で実行する
-    exit 2 &> /dev/null
+    exit $EXIT_CODE_WITH_ADDITION &> /dev/null
   fi
 ;;
 
@@ -433,18 +465,17 @@ admin )
 ;;
 
 ## [diff] ベースブランチからの差分を確認
-## --copy 出力内容をクリップボードにコピーする
 diff )
   case $args[1] in
   ### [diff main] メインブランチの最新コミットの差分を確認
-  master|main )
-    local target="$args[1]..$args[1]~1"
+  master | main )
+    local target="${args[1]}..${args[1]}~1"
     ;;
-  ### [diff copy] 出力内容をクリップボードにコピーする
+  ### [diff copy] --copyオプションを付加する
   copy )
     local base_commit=$(git merge-base ${BASE_BRANCH} HEAD)
     local target="${base_commit}..HEAD"
-    options[copy]="1"
+    args[copy]="1"
     ;;
   * )
     local base_commit=$(git merge-base ${BASE_BRANCH} HEAD)
@@ -452,16 +483,21 @@ diff )
     ;;
   esac
 
-  local file_changes=$(git diff --name-only --diff-filter=MAR ${target})
+  ## --delete 削除されたファイルのみ表示する
+  local filter="MAR"
+  [[ -n "${args[delete]}" ]] && filter="D"
+
+  local file_changes=$(git diff --name-only --diff-filter=${filter} ${target})
   if [ -z "$file_changes" ]; then
-    printf $TEXT_DANGER "差分ファイルがありません"
+    printf $TEXT_DANGER "Nothing is changed."
     return
   fi
 
   printf $TEXT_INFO "$(echo $file_changes | grep -c '') files changed. (${target})"
   printf "${file_changes}\n"
 
-  if [[ -n "${options[copy]}" ]]; then
+  ## --copy 出力内容をクリップボードにコピーする
+  if [[ -n "${args[copy]}" ]]; then
     echo ${file_changes} | pbcopy
     printf $TEXT_SUCCESS "差分ファイルリストをクリップボードにコピーしました"
   fi
@@ -470,7 +506,7 @@ diff )
 ## [dist] 差分ファイルをdist出力する
 ## --commit 直前のコミットのみを対象とする
 ## --all ファイルを除外しない
-## --copy 実行せずコピーする
+## --copy 実行せずコマンドをコピーする
 dist )
   local base_commit=$(git merge-base ${BASE_BRANCH} HEAD)
 
@@ -486,9 +522,35 @@ dist )
     mkdir ${DEST_DIR} &> /dev/null
     printf $TEXT_WARNING "distフォルダを削除しました"
     ;;
+  ### [dist files] ファイル指定でコピー
+  files )
+    cd "${PROJECT_DIR}/" &> /dev/null
+
+    local files=""
+    printf $TEXT_INFO "対象ファイルを入力してください (空白行でEnterすると確定)"
+    local file
+    while true; do
+      read file
+      [ -z "$file" ] && break
+
+      if [ -f $file ]; then
+        files+="$file\n"
+      else
+        printf $TEXT_DANGER "File not found. (${file})"
+      fi
+    done
+
+    if [[ -n "${options[copy]}" ]]; then
+      echo $files | xargs -I {} echo "rsync -R {} ${DEST_DIR}" | pbcopy
+      printf $TEXT_SUCCESS "指定ファイルの出力コマンドをクリップボードにコピーしました"
+    else
+      rm -rf ${DEST_DIR} &> /dev/null
+      mkdir ${DEST_DIR}
+      echo $files | xargs -I {} rsync -R {} ${DEST_DIR}
+      printf $TEXT_WARNING "指定ファイルをdistフォルダにコピーしました"
+    fi
+    ;;
   * )
-    rm -rf ${DEST_DIR} &> /dev/null
-    mkdir ${DEST_DIR}
     cd "${PROJECT_DIR}/" &> /dev/null
 
     ### [dist copy] 実行せずコマンドをコピーする
@@ -517,10 +579,11 @@ dist )
       echo $files | xargs -I {} echo "rsync -R {} ${DEST_DIR}" | pbcopy
       printf $TEXT_SUCCESS "${target_name}の出力コマンドをクリップボードにコピーしました"
     else
+      rm -rf ${DEST_DIR} &> /dev/null
+      mkdir ${DEST_DIR}
       echo $files | xargs -I {} rsync -R {} ${DEST_DIR}
       printf $TEXT_WARNING "${target_name}をdistフォルダにコピーしました"
     fi
-
     ;;
   esac
 ;;
@@ -547,44 +610,39 @@ deploy )
   if check_config_exists; then
     printf $TEXT_WARNING "設定ファイルが含まれています！"
   else
-    if [ "$2" = "-y" ]; then
-      local answer="y"
-    else
-      printf $TEXT_WARNING "Would you like to deploy under dist to ${env}? (y/n)"
-      read answer
+    if [ -z "$args[y]" ]; then
+      printf $TEXT_WARNING "Would you like to deploy under dist to ${env}?"
+      read_confirmation
     fi
   fi
 
-  case $answer in
-    y)
-      case $env in
-        production )
-          # 本番はtmpにアップロード
-          rsync -hrv "${DEST_DIR}/${DEPLOY_DIR}" "${SSH_NAME_PRODUCTION}:/tmp/releases/$(date +%Y%m%d)" --exclude='.DS_Store'
-          ;;
-        staging )
-          # ステージングは直接アップロード
-          rsync -hrvop "${DEST_DIR}/${DEPLOY_DIR}" "${SSH_NAME_STAGING}:${DEPLOY_TO}" --exclude='.DS_Store'
-          ;;
-      esac
-
-      printf $TEXT_SUCCESS "Deployed!"
+  case $env in
+    production )
+      # 本番はtmpにアップロード
+      rsync -hrv "${DEST_DIR}/${DEPLOY_DIR}" "${SSH_NAME_PRODUCTION}:/tmp/releases/$(date +%Y%m%d)" --exclude='.DS_Store'
       ;;
-    *) ;;
+    staging )
+      # ステージングは直接アップロード
+      rsync -hrvop "${DEST_DIR}/${DEPLOY_DIR}" "${SSH_NAME_STAGING}:${DEPLOY_TO}" --exclude='.DS_Store'
+      ;;
   esac
+
+  printf $TEXT_SUCCESS "Deployed!"
 ;;
 
 ## [build] リリースファイルを作成する (未メンテナンス)
 build )
-  rm -rf ${DEST_DIR} &> /dev/null
-  mkdir ${DEST_DIR}
   local base_commit="master"
   local release_commit="$BASE_BRANCH"
+
+  # distフォルダをリセット
+  rm -rf ${DEST_DIR} &> /dev/null
+  mkdir ${DEST_DIR}
 
   case $2 in
   ## --copy 実行せずコマンドをコピーする
   --copy )
-    git diff --name-only --diff-filter=MAR ${base_commit}..${release_commit} | xargs -I {} echo "rsync -R {}  ${DEST_DIR}" | pbcopy
+    git diff --name-only --diff-filter=MAR ${base_commit}..${release_commit} | grep -vE ^app/config | xargs -I {} echo "rsync -R {}  ${DEST_DIR}" | pbcopy
     printf $TEXT_WARNING "${BASE_BRANCH}ブランチからの差分ファイル出力用rsyncコマンドをコピーしました"
     ;;
   *)
@@ -610,29 +668,41 @@ selenium )
 
 ## [ssh <environment>] SSH接続してアプリケーションルートに移動する
 ssh )
-  local env=$(parse_environment $args[1])
+  local env=${args[1]}
+  if [ $env ]; then
+    env=$(parse_environment ${args[1]})
+  else
+    printf $TEXT_INFO "Choose a server to connect."
+    read_selection local staging production && env=${FUNCTION_RETURN}
+  fi
+
   printf $TEXT_INFO "Connecting to ${PROJECT_NAME} application root... (${env})"
 
   case $env in
   production )
-    [ -v $SSH_NAME_PRODUCTION ] && printf $TEXT_DANGER "SSH name is not configured. (${PROJECT_NAME} / ${env})" && return 1
+    [ -v $SSH_NAME_PRODUCTION ] && printf $TEXT_DANGER "SSH name is not configured. (${PROJECT_NAME} ${env})" && exit 1
     echo $MESSAGE_PRODUCTION_ACCESS
-    ssh ${SSH_NAME_PRODUCTION} -t "cd ${APP_ROOT}; bash --login"
+    ssh ${SSH_NAME_PRODUCTION} -t "export PS1=\"\[\e[1;31m\][ssh:${SSH_NAME_PRODUCTION}] \[\e[0;31m\]\W\[\e[m\] \"; cd ${APP_ROOT}; bash --login"
     ;;
   staging )
-    [ -v $SSH_NAME_STAGING ] && printf $TEXT_DANGER "SSH name is not configured. (${PROJECT_NAME} / ${env})" && return 1
-    ssh ${SSH_NAME_STAGING} -t "cd ${APP_ROOT}; bash --login"
+    [ -v $SSH_NAME_STAGING ] && printf $TEXT_DANGER "SSH name is not configured. (${PROJECT_NAME} ${env})" && exit 1
+    ssh ${SSH_NAME_STAGING} -t "export PS1=\"\[\e[1;33m\][ssh:${SSH_NAME_STAGING}] \[\e[0;33m\]\W\[\e[m\] \"; cd ${APP_ROOT}; bash --login"
     ;;
   local )
-    cd_vagrant
-    vagrant ssh -c 'cd "/var/www/$(ls /var/www | more)"; bash --login'
+    if [[ "$VM_PLATFORM" == "vagrant" ]]; then
+      cd_vagrant
+      vagrant ssh -c 'cd "/var/www/$(ls /var/www | more)"; bash --login'
+    else
+      to doc bash web
+    fi
     ;;
   esac
 ;;
 
 ## [sshkey <ssh_name>] 公開鍵をサーバーに設定する
 sshkey )
-  if [ -z "${args[1]}" ]; then
+  local ssh_name="${args[1]}"
+  if [ -z "${ssh_name}" ]; then
     printf $TEXT_ARGUMENT_ERROR "sshkey <ssh_name>"
     return
   fi
@@ -644,7 +714,10 @@ sshkey )
     echo "公開鍵設定を中止しました。"
     return
   fi
-  ssh ${args[1]} "mkdir -p ~/.ssh; echo "${public_key}" >> ~/.ssh/authorized_keys"
+  printf $TEXT_WARNING "サーバー『${ssh_name}』公開鍵を追加しますか？"
+  read_confirmation
+
+  ssh ${ssh_name} "mkdir -p ~/.ssh; echo "${public_key}" >> ~/.ssh/authorized_keys"
 ;;
 
 ## [vagrant] Vagrantを切り替え
@@ -720,7 +793,7 @@ log )
 
 ## [bl] Backlogをブラウザで開く
 bl )
-  [ -v $BACKLOG_PREFIX ] && printf $TEXT_DANGER "Backlog prefix is not configured." && return
+  [ ! $BACKLOG_PREFIX ] && printf $TEXT_DANGER "Backlog prefix is not configured. (${PROJECT_NAME})" && return 1
   local store_ini="${SCRIPT_DIR}/config/store.ini"
   local store_key_prefix="${PROJECT_NAME}_"
 
@@ -744,14 +817,16 @@ bl )
       local backlog_task_id="${BACKLOG_PREFIX}-${args[2]}"
 
       set_ini "${store_key_prefix}${branch_name} = ${backlog_task_id}" ${store_ini} --section=backlog_task_id
-      echo "Backlog課題番号を登録しました。[${branch_name} → ${backlog_task_id}]"
+      printf $TEXT_SUCCESS "Backlog課題番号を登録しました。[${branch_name} → ${backlog_task_id}]"
     else
-      echo "Backlog課題番号を指定してください"
+      printf $TEXT_ARGUMENT_ERROR "bl set <project_id>"
     fi
     ;;
   * )
     local branch_name=$(git rev-parse --abbrev-ref HEAD)
     local stored_task_id=$(parse_ini ${SCRIPT_DIR}/config/store.ini --section=backlog_task_id --key=${store_key_prefix}${branch_name})
+
+
 
     if [ -n "$stored_task_id" ]; then
       # iniに設定されたブランチがあれば課題を開く
@@ -859,11 +934,10 @@ timer )
       local timestamp=$((${end} - ${start}))
       local minutes=$((${timestamp} / 60))
       local seconds=$((${timestamp} % 60))
-      printf "\rPassed: %3s:%02d secs" ${minutes} ${seconds}
+      printf "\rTimer: %3s:%02d secs" ${minutes} ${seconds}
       [ $minutes -ge 1000 ] && break
       sleep 1
     done
-    return 1
   fi
 
   ### [timer <time> <message>] 指定時刻もしくは一定時間のタイマーをセットする
@@ -896,15 +970,15 @@ timer )
       ;;
     * )
       printf $TEXT_WARNING "引数が正しくありません"
-      return 1
+      exit 1
     esac
 
     [ -n "${args[2]}" ] && local message=${args[2]} || local message="タイマーが終了しました (${quantity} ${unit} from $(date +%H:%M))"
   fi
 
   if [ ${seconds} -gt 10800 ]; then
-    printf $TEXT_ARGUMENT_ERROR "The timer for no more than 3 hours"
-    return 2
+    printf $TEXT_ARGUMENT_ERROR "The timer for no more than 3 hours."
+    exit 1
   fi
 
   # タイマーを登録
@@ -913,6 +987,11 @@ timer )
     osascript -e "display notification \"${message}\" with title \"Tool Script\""
   ) &
   printf $TEXT_SUCCESS "The timer has been set. (${message})"
+;;
+
+## [cp] Git除外ファイルを考慮してコピー
+cp )
+  rsync -rcv $args[1] $args[2] --exclude='.DS_Store' --exclude='/.git' -C --filter=":- .gitignore"
 ;;
 
 ## [rm] ファイルやディレクトリをゴミ箱に入れる
@@ -973,7 +1052,7 @@ rm )
     return
   fi
   # ディレクトリ移動はサブシェル外で実行する
-  exit 2 &> /dev/null
+  exit $EXIT_CODE_WITH_ADDITION &> /dev/null
 ;;
 
 ## [help] ヘルプメッセージを表示
@@ -983,16 +1062,28 @@ help | '' )
 
 ## [<etc>] アクション名が一致しなかった場合は追加のアクションを読み込み
 * )
-  local addition_path="${SCRIPT_DIR}/config/addon.sh"
-  [ -f "${addition_path}" ] && source ${addition_path}
+  local addon_path="${SCRIPT_DIR}/config/addon.sh"
+  if [ -f "${addon_path}" ]; then
+    source ${addon_path}
+    local exit_code=$?
+  fi
+
+  exit $EXIT_CODE_ACTION_NOT_FOUND &> /dev/null
+  ;;
 esac)
 
 # サブシェル終了後のメインシェル処理 (終了コード2の場合)
 local exit_code=$?
-if [[ ${exit_code} == 2 ]]; then
-  case $1 in
-  refresh ) source ~/.zsh/src/tool.sh ;;
-  mkdir | .. ) cd $(to $@ --path) &> /dev/null ;;
-  esac
-fi
+case ${exit_code} in
+10 )
+  if [[ ${exit_code} == 10 ]]; then
+    case $1 in
+    refresh ) source $(to $@ --path) ;;
+    mkdir | .. ) cd $(to $@ --path) &> /dev/null ;;
+    esac
+  fi
+  ;;
+27 )
+  printf $TEXT_WARNING "Undefined action. ($1)"
+esac
 }

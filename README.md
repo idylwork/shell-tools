@@ -48,7 +48,7 @@ ws expj # example_project に移動
 #### 導入
 
 [index.sh](./index.sh) を読み込むことで各コマンドが追加されるので、`~/.zshrc`などに以下のコードを追加します。
-.zshrc に関する他の設定は[zshrc_sample](./sample/zshrc_sample)を参照してください。
+.zshrc に関する他の設定は[zshrc.sample](./sample/zshrc.sample)を参照してください。
 
 ```sh
 [ -f ~/.zsh/index.sh ] && source ~/.zsh/index.sh
@@ -58,6 +58,12 @@ ws expj # example_project に移動
 
 ```sh
 source ~/.zshrc
+```
+
+コマンドを使って設定ファイルを作成します。
+
+```sh
+to edit --init
 ```
 
 #### 利用
@@ -71,13 +77,20 @@ to help
 
 ### Git 設定
 
-#### 導入
+[/git 配下](./git/)のファイルを`~/gitconfig`に組み込むことで Git にさまざまな設定が追加されます。
 
-[gitconfig_sample.ini](./sample/gitconfig_sample) の設定を反映することで Git にさまざまな設定が追加されます。
-
-- `gitignore` グローバルな Gitignore 設定
+- `gitignore` 汎用的なグローバルの Gitignore 設定
 - `pre-commit` コミット時、変更点にデバッグコードが含まれる場合はコミットを中止する
 - その他設定
+
+#### 導入
+
+[gitconfig.sample.ini](./sample/gitconfig.sample)にサンプル設定があるため、各項目を適宜`~/.gitconfig`に反映してください。
+以下コマンドで差分を表示できます。
+
+```sh
+to git init
+```
 
 #### 利用
 
@@ -86,18 +99,21 @@ Git の挙動がすべてのリポジトリで変更されるため、特別な�
 ## ディレクトリ構成
 
 - index.sh スクリプトを読み込む
-- src シェルスクリプトのコード
-- git Git の設定に関するファイル
-- config 設定ファイル
+- src/ シェルスクリプトのコード
+  - tool.sh `to`コマンド本体
+  - constants.sh 定数週
+  - functions.sh
+  - settings.sh
+- git/ Git の設定に関するファイル
+- config/ 設定ファイル
   - addon.sh 追加のスクリプト
   - projects.ini プロジェクトごとの定数の設定
   - store.ini 保持したいデータ (`to bl`使用時の索引)
   - note.txt `to note`使用時に原稿として使用
-- sample サンプルファイル
-  - addon_sample.sh `config/addon.sh`のサンプル
-  - gitconfig_sample `~/.gitconfig`のサンプル
-  - projects_sample.ini のサンプル `config/projects.ini`のサンプル
-  - zshrc_sample `~/.zshrc`のサンプル
+- sample/ サンプルファイル
+  - config/ 設定ファイルのサンプル (`to edit --init`で配置)
+  - gitconfig.sample `~/.gitconfig`のサンプル
+  - zshrc.sample `~/.zshrc`のサンプル
 
 特定のプロジェクトに関するコードや設定は`config/`配下に記載するようにしてください
 

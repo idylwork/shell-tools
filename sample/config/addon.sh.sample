@@ -1,5 +1,7 @@
 # プロジェクト個別のアクション
 case "${PROJECT_NAME}" in
 * )
+  return 127
   printf $TEXT_MAGENTA "Undefined action. ($action)\n"
+
 esac # Specific Actions
