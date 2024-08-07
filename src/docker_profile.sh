@@ -1,1 +1,2 @@
-alias art=$(artisan_path=$(find . -maxdepth 2 -type f -name artisan); [ $artisan_path ] && echo $artisan_path || echo "echo Laravel artisan not found.")
+# Bash command initialize by tool script
+alias art=$(laravel_path=$(find $(pwd) -maxdepth 1 -type d -name laravel); [ $laravel_path ] && echo "${laravel_path}/artisan" || echo "echo Laravel not found.")

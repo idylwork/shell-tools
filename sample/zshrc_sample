@@ -1,0 +1,36 @@
+# 追加スクリプトの読み込み
+[ -f ~/.zsh/index.sh ] && source ~/.zsh/index.sh
+
+# コマンドのパス
+export PATH=$PATH:/usr/local/bin:/usr/local/Cellar/nkf/2.1.3/bin/nkf
+
+# rbenv (Ruby version manager)
+# 下記の初期化コードを元に最適化 (echo "$(rbenv init -)" で書き出し)
+# eval "$(rbenv init -)" &> /dev/null
+export PATH="${HOME}/.rbenv/shims:${PATH}"
+export RBENV_SHELL=zsh
+source '/usr/local/Cellar/rbenv/1.2.0/libexec/../completions/rbenv.zsh'
+# rehashが遅いため自動実行しない
+#command rbenv rehash 2>/dev/null
+rbenv() {
+local command
+command="${1:-}"
+if [ "$#" -gt 0 ]; then
+shift
+fi
+
+case "$command" in
+rehash|shell )
+eval "$(rbenv "sh-$command" "$@")";;
+* )
+command rbenv "$command" "$@";;
+esac
+}
+
+# nodenv (Node version manager)
+export PATH="$HOME/.nodenv/bin:$PATH"
+eval "$(nodenv init -)"
+
+# yvm (Yarn version manager)
+export YVM_DIR=/usr/local/opt/yvm
+[ -r $YVM_DIR/yvm.sh ] && . $YVM_DIR/yvm.sh

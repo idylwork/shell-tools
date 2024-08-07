@@ -1,7 +1,16 @@
-# プロジェクト個別のアクション
-case "${PROJECT_NAME}" in
-* )
-  return 127
-  printf $TEXT_MAGENTA "Undefined action. ($action)\n"
+# プロジェクト固有のアクション定義
+set -e
 
-esac # Specific Actions
+case "${PROJECT_NAME}" in
+sample_project )
+  case $action in
+  sample )
+    echo $TEXT_INFO "サンプルアクション"
+    ;;
+  * )
+    exit $EXIT_CODE_ACTION_NOT_FOUND &> /dev/null
+  esac
+  ;;
+* )
+  exit $EXIT_CODE_ACTION_NOT_FOUND &> /dev/null
+esac

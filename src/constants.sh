@@ -2,6 +2,8 @@
 
 # 一時変数 (標準出力を伴う関数で戻り値を一時格納)
 local FUNCTION_RETURN=""
+# 区切り文字のデフォルトを保持
+local DEFAULT_IFS=$IFS
 
 # ファイルパス
 local -r WORKSPACE="${HOME}/Workspace"
@@ -36,6 +38,7 @@ local -r TEXT_MUTED="${COLOR_MUTED}%s\n${COLOR_RESET}"
 # 終了コード
 local -r EXIT_CODE_SUCCESS=0
 local -r EXIT_CODE_ERROR=1
+local -r EXIT_CODE_WRONG_ARGUMENT=2
 local -r EXIT_CODE_WITH_ADDITION=10
 local -r EXIT_CODE_ACTION_NOT_FOUND=27
 
@@ -67,4 +70,3 @@ local -r EMOJI_CHARS=(
 
 # 汎用メッセージ
 local -r MESSAGE_PRODUCTION_ACCESS="${COLOR_DANGER}────────────────────────────────────\n⚠️  ACCESS TO PRODUCTION ENVIRONMENT!\n────────────────────────────────────${COLOR_RESET}"
-local -r TEXT_ARGUMENT_ERROR="${COLOR_DANGER}Wrong argument. (expected: %s)${COLOR_RESET}\n"

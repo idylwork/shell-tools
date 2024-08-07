@@ -72,9 +72,9 @@ fuzzy_dir_search() {
     # 前方一致
     local prefix_regex="^${arg}.*"
     local next_dir=$(ls $target_path | grep -s -m1 $prefix_regex)
-    # 前方スネークケース
+    # 前方スネークケース・ケバブケース
     if [ -z $next_dir ]; then
-      local snake_regex="^$(echo ${arg} | sed 's|.|&_*|g')"
+      local snake_regex="^$(echo ${arg} | sed 's|.|&[_-]*|g')"
       local next_dir=$(ls $target_path | grep -s -m1 $snake_regex)
     fi
     # 前方あいまい検索
@@ -311,6 +311,8 @@ cd_vagrant() {
 }
 
 # 仮想マシンのファイルを監視する
+# @param string $1 ファイルパス
+# @param string $2 オプション
 watch_vm_file() {
   case $2 in
   '' ) local call='';;
@@ -379,14 +381,30 @@ project_origin() {
 docker_container_env() {
   local yaml_path="${PROJECT_DIR}/docker-compose.yaml"
   local -A environment=()
-  local lines=($(grep -n 'environment:' ${yaml_path} | sed 's/:.*$//'))
-  for line in ${lines}; do
-    local line=$(( line + 1 ))
-    tail -n +${line} ${yaml_path} | while read item; do
-      if [[ "${item}" == "- "*=* ]]; then
-        local pair=${item:2}
-        echo ${pair%=*} ${pair#**=}
+
+  # grep -n 'environment:' ${yaml_path}
+  # grep -n 'environment:' ${yaml_path} |  tr -dc ' ' | wc -c
+
+  local headings=($(grep -n 'environment:' ${yaml_path} | sed 's/:.*$//'))
+  for heading in ${headings}; do
+    local indentCount=$(($(head -n ${heading} ${yaml_path} | tail -n 1 | sed "s/^\( *\).*/\1/" | wc -c) - 1))
+    # 行番号とインデント幅を取得
+    local line_no=$(($(echo ${heading} | sed 's/:.*$//') + 1))
+    local indent=$(head -n ${heading} ${yaml_path} | tail -n 1 | sed "s/^\( *\).*/\1/")
+
+    IFS=$'\n'
+    for item in $(tail -n +${line_no} ${yaml_path}); do
+      IFS=$DEFAULT_IFS
+      if [[ ${item} =~ "^${indent}  " ]]; then
+        # environment項目内をスペース区切りで出力
+        if [[ "${item}" == *=* ]]; then
+          local pair=$(echo ${item} | sed "s/^[ -]*//" | sed "s/ *= */:/")
+        else
+          local pair=$(echo ${item} | sed "s/^[ -]*//" | sed "s/: /:/")
+        fi
+        echo ${pair%:*} ${pair#**:}
       else
+        # インデントが解除されたら終了
         break
       fi
     done
@@ -506,7 +524,9 @@ read_selection() {
   local current_index=1
 
   if [ ${#items[@]} -le 1 ]; then
-    FUNCTION_RETURN=${items[1]}
+    local item=${items[1]}
+    echo "${COLOR_SUCCESS}➣ ${item}${COLOR_RESET}"
+    FUNCTION_RETURN=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/' )
     return
   fi
 
@@ -517,11 +537,10 @@ read_selection() {
     for item in "${items[@]}"; do
       index=$((${index} + 1))
       if [[ $index == $current_index ]]; then
-        echo -n "${COLOR_SUCCESS}➣ "
+        echo -n "${COLOR_SUCCESS}➣ ${item}${COLOR_RESET}  "
       else
-        echo -n "${COLOR_MUTED}  "
+        echo -n "${COLOR_MUTED}  ${item}${COLOR_RESET}  "
       fi
-      echo -n "${item}${COLOR_RESET}  "
     done
   }
 
@@ -533,14 +552,76 @@ read_selection() {
     fi
     case $keycode in
     $'\x1b\x5b\x44' | $'\x1b\x5b\x41' ) # Left or Up
-      [[ $current_index > 1 ]] && current_index=$((current_index - 1)) || current_index=${#items[@]}
+      [ $current_index -gt 1 ] && current_index=$((current_index - 1)) || current_index=${#items[@]}
       ;;
     $'\x1b\x5b\x43' | $'\x1b\x5b\x42' ) # Right or Down
-      [[ ${current_index} < ${#items[@]} ]] && current_index=$((current_index + 1)) || current_index=1
+      [ ${current_index} -lt ${#items[@]} ] && current_index=$((current_index + 1)) || current_index=1
       ;;
     $'\x0a' | $'\x20' ) # Enter or Space
       echo ""
-      FUNCTION_RETURN=${items[${current_index}]}
+      local item=$items[${current_index}]
+      FUNCTION_RETURN=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/')
+      break
+      ;;
+    esac
+  done
+}
+
+# 選択表示 (縦)
+# @param string $@ 選択肢 (1つしかなければ選択肢を表示しない `: `区切りで入力すると前方部分だけを返す)
+# @returns $FUNCTION_RETURN 選択した項目が格納される
+# @example read_selection_long "1: one" "2: two" "3: three" && local result=${FUNCTION_RETURN}
+read_selection_long() {
+  local items=(${@})
+  local current_index=1
+
+  if [ ${#items[@]} -le 1 ]; then
+    echo "${COLOR_SUCCESS}➣ ${items[1]}${COLOR_RESET}"
+    local item=${items[1]}
+    FUNCTION_RETURN=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/' )
+    return
+  fi
+
+  # 項目選択の表示更新
+  render_selection() {
+    # カーソル位置を戻す
+    for item in "${items[@]}"; do
+      echo -n "\033[A\r"
+    done
+
+    local index=0
+    for item in "${items[@]}"; do
+      index=$((${index} + 1))
+      if [[ $index == $current_index ]]; then
+        echo "${COLOR_SUCCESS}➣ ${item}${COLOR_RESET}"
+      else
+        echo "${COLOR_MUTED}  ${item}${COLOR_RESET}"
+      fi
+    done
+  }
+
+  # カーソルの位置を下端に調整
+  for item in "${items[@]}"; do
+    echo ""
+  done
+
+  local keycode
+  while ((render_selection) &) && IFS= read -r -k1 -s keycode && [[ -n "$keycode" ]]; do
+    if [[ $keycode == $'\x1b' ]]; then
+      read -r -k2 -s rest
+      keycode+="$rest"
+    fi
+    case $keycode in
+    $'\x1b\x5b\x44' | $'\x1b\x5b\x41' ) # Left or Up
+      [ $current_index -gt 1 ] && current_index=$((current_index - 1)) || current_index=${#items[@]}
+      ;;
+    $'\x1b\x5b\x43' | $'\x1b\x5b\x42' ) # Right or Down
+      [ ${current_index} -lt ${#items[@]} ] && current_index=$((current_index + 1)) || current_index=1
+      ;;
+    $'\x0a' | $'\x20' ) # Enter or Space
+      echo ""
+      local item=${items[${current_index}]}
+      FUNCTION_RETURN=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/' )
       break
       ;;
     esac

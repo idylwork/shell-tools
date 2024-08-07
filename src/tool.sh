@@ -2,6 +2,7 @@
 # 処理はサブシェルで実行
 # @exit 0 成功
 # @exit 1 失敗
+# @exit 2 オプションや値が不正
 # @exit $EXIT_CODE_WITH_ADDITION メインシェルで追加処理を実行
 # @exit 27 アクションが見つからない
 to() {
@@ -110,8 +111,8 @@ test )
 sync )
   local sub_action=${args[1]}
   if [ -z "${sub_action}" ]; then
-    printf $TEXT_INFO "Choose sub action. [ls: ファイル一覧 diff: 差分一覧 export:同期保存 import:同期読み込み]"
-    read_selection ls diff export import && sub_action=${FUNCTION_RETURN}
+    printf $TEXT_INFO "Choose sub action."
+    read_selection_long "ls: ファイル一覧" "diff: 差分一覧" "export: 同期保存" "import: 同期読み込み" && sub_action=${FUNCTION_RETURN}
   fi
 
   case ${sub_action} in
@@ -140,11 +141,10 @@ sync )
 
     rsync -rcv "${EXPORT_DIR}/" $SCRIPT_DIR --exclude='.DS_Store' --exclude='/.git' -C --filter=":- .gitignore"
     printf $TEXT_SUCCESS "シェルスクリプトを読み込みました"
-    printf $TEXT_SUCCESS "初回のみ.zshrcへの組み込みが必要です"
   ;;
   * )
-    printf $TEXT_ARGUMENT_ERROR "sync <sub_action>"
-esac
+    exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
+  esac
 ;;
 
 ## [note] メモファイルの表示
@@ -195,9 +195,27 @@ doc|docker )
       printf $TEXT_INFO "Choose docker container to connect."
       read_selection $(docker compose config --services | tail -r) && local container=${FUNCTION_RETURN}
     fi
+
+    # 設定ファイルの組み込み
+    local bash_profile_path="/root/.bash_profile"
+    local docker_profile_path="/root/.docker_profile"
+    local text="source ${docker_profile_path}"
+    if docker compose exec ${container} grep -q ${text} ${bash_profile_path}; then; else
+      printf $TEXT_INFO "Setting to ${container} bash profile."
+      docker compose exec ${container} /bin/sh -c "echo ${text} >> ${bash_profile_path}"
+      docker compose cp ${SCRIPT_DIR}/src/docker_profile.sh ${container}:${docker_profile_path}
+    fi
+
+    # コンテナへの接続
     printf $TEXT_INFO "Start connecting on ${container}... (docker compose exec -it ${container} bash --login)"
-    docker compose cp ${SCRIPT_DIR}/src/docker_profile.sh ${container}:/root/.bash_profile
     docker compose exec -it -e PS1="\[\e[1;32m\][docker:${container}] \[\e[0;32m\]\W\[\e[m\] " ${container} bash --login
+    ;;
+  ### [doc destroy] カレントディレクトリのコンテナをイメージやボリュームを含めて削除する
+  destroy )
+    printf $TEXT_WARNING "Would you like to delete docker containers?"
+    read_confirmation
+
+    docker compose down --rmi all --volumes --remove-orphans
     ;;
   esac
 ;;
@@ -251,7 +269,10 @@ refresh )
 git )
   case $args[1] in
   ''|tree|t )
-    printf $TEXT_INFO 'Start openning repository on git client…'
+    # リポジトリの確認
+    local repositry_dir
+    repositry_dir=$(git rev-parse --show-toplevel)
+    printf $TEXT_INFO "Start openning $(basename ${repositry_dir}) repository on git client…"
     open -a $APP_GIT_CLIENT $PROJECT_DIR
     ;;
   ### [git init] Git設定ファイルを編集する
@@ -259,11 +280,15 @@ git )
     code -n $SCRIPT_DIR
     code --diff ${SCRIPT_DIR}/sample/gitconfig.sample $(git config --global --list --show-origin --name-only | head -1 | sed 's/file:\(.*\)\t.*/\1/')
     ;;
+  ### [git code] GitHubのCodeページを開く
+  code )
+    open -a $BROWSER $(github_url)
+    ;;
   ### [git i] GitHubのIssuesページを開く
   issue|is|i )
     open -a $BROWSER "$(github_url)/issues"
     ;;
-  ### [git p] GitHubのPull sRequestsページを開く
+  ### [git p] GitHubのPull Requestsページを開く
   pulls|pr|p )
     open_git_pulls ${@:3}
     ;;
@@ -298,6 +323,10 @@ git )
     git fetch origin
     git reset --hard "origin/${branch_name}"
     ;;
+  ### [git forcepull] ブランチを強制的にプッシュする
+  forcepush )
+    git push --force-with-lease --force-if-includes
+    ;;
   ### [git clean] マージされたブランチlogを一括削除
   ### --all ベースブランチを除外したすべてのブランチを対象とする
   clean )
@@ -320,13 +349,41 @@ git )
     ;;
   ### [git amend] 現在ステージ中のファイルを前のコミットに追加コミットする
   amend )
+    ### --date コミット日付も変更する
+    if [ -n "$options[date]" ]; then
+      local original_date=$(git log --date=iso --date=format:"%Y-%m-%d" --pretty=format:"%ad" -1)
+      local original_time=$(git log --date=iso --date=format:"%H:%M:%S" --pretty=format:"%ad" -1)
+
+      echo -n "${COLOR_INFO}Date (${original_date}): ${COLOR_RESET}"
+      local commit_date
+      read commit_date
+      [ -z "$commit_date" ] && commit_date=$original_date
+      echo -n "${COLOR_INFO}Time (${original_time}): ${COLOR_RESET}"
+      local commit_time
+      read commit_time
+      [ -z "$commit_time" ] && commit_time=$original_time
+      local commit_date="${commit_date} ${commit_time}"
+    fi
+
     local commit_message=$(git log --oneline | head -n 1 | sed "s|^[a-z0-9]* ||")
     printf $TEXT_WARNING $commit_message
     git status --porcelain | grep -v "^ "
     printf $TEXT_DANGER "Would you like to override previous commit?"
     read_confirmation
 
-    git commit --amend -m $commit_message
+    if [ -n "$commit_date" ]; then
+      git commit --amend -m $commit_message --date="$commit_date"
+
+      local commit_total_count=$(git rev-list --count HEAD)
+      if (( $(git rev-list --count HEAD) > 1 )); then
+        git rebase HEAD~1 --committer-date-is-author-date
+      else
+        # ファーストコミットのみ
+        git rebase --root --committer-date-is-author-date
+      fi
+    else
+      git commit --amend -m $commit_message
+    fi
   ;;
   ### [git stash] 現在の変更点を一時退避する (新規追加したファイルも含む)
   stash )
@@ -337,7 +394,8 @@ git )
     local branch_name=$(git rev-parse --abbrev-ref HEAD)
     if [[ $branch_name == "${BACKLOG_PREFIX}-"* ]]; then
       # Backlog課題形式のブランチ名であれば課題名を取得
-      open "https://hotfactory.backlog.jp/view/${branch_name}"
+      local backlog_issue_key=$(echo $branch_name | sed "s/\(${BACKLOG_PREFIX}-[0-9]*\).*/\1/")
+      open "https://hotfactory.backlog.jp/view/${backlog_issue_key}"
       sleep 4
       local task_name=$(browser_find_element '#summary')
     fi
@@ -346,7 +404,7 @@ git )
     sleep 4
     browser_input_new "${branch_name} ${task_name}"
     if [ -n "${task_name}" ]; then
-      browser_input_new "## Backlog\nhttps://hotfactory.backlog.jp/view/${branch_name}\n\n## 対応内容\n" 1
+      browser_input_new "## Backlog\nhttps://hotfactory.backlog.jp/view/${backlog_issue_key}\n\n## 対応内容\n" 1
     else
       browser_input_new "## 対応内容\n" 1
     fi
@@ -355,7 +413,7 @@ git )
     git log --graph --oneline --decorate
     ;;
   * )
-    open -a $BROWSER $(github_url)
+    exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
   esac
 ;;
 
@@ -375,7 +433,7 @@ forcepull )
 ## [<number>] 番号から規定のブランチをチェックアウトする
 [0-9]* )
   local branch="${BRANCH_PREFIX}${action}"
-  if [ -n "$(git branch --format="%(refname:short)" | grep ^${branch}$)" ]; then
+  if [ -n "$(git branch --format="%(refname:short)" | grep ^${branch}$)" ] || [ -n "$(git branch -r --format="%(refname:short)" | grep ^origin/${branch}$)" ]; then
     git checkout ${branch}
   else
     printf $TEXT_WARNING "Branch '${branch}' not found."
@@ -672,8 +730,12 @@ ssh )
   if [ $env ]; then
     env=$(parse_environment ${args[1]})
   else
+    local -a envs=("local")
+    [ -n "$SSH_NAME_STAGING" ] && envs+=("staging")
+    [ -n "$SSH_NAME_PRODUCTION" ] && envs+=("production")
+
     printf $TEXT_INFO "Choose a server to connect."
-    read_selection local staging production && env=${FUNCTION_RETURN}
+    read_selection $envs && env=${FUNCTION_RETURN}
   fi
 
   printf $TEXT_INFO "Connecting to ${PROJECT_NAME} application root... (${env})"
@@ -703,8 +765,7 @@ ssh )
 sshkey )
   local ssh_name="${args[1]}"
   if [ -z "${ssh_name}" ]; then
-    printf $TEXT_ARGUMENT_ERROR "sshkey <ssh_name>"
-    return
+    exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
   fi
 
   printf $TEXT_SUCCESS "${args[1]}に追加する公開鍵を入力してください。"
@@ -766,8 +827,17 @@ db )
     cd_vagrant
     vagrant ssh -c "psql ${@:2}"
   else
+    local container="db"
+    # docker-composeファイルから環境変数を読み取ってデータベースに接続する
     eval "local -A docker_env=($(docker_container_env))"
-    eval "docker compose exec -it db psql -U ${docker_env[POSTGRES_USER]} -d ${docker_env[POSTGRES_DB]}"
+    if [ -n "${docker_env[MYSQL_USER]}" ]; then
+      docker compose exec -it ${container} mysql -u ${docker_env[MYSQL_USER]} -D ${docker_env[MYSQL_DATABASE]} -p${docker_env[MYSQL_PASSWORD]}
+    elif [ -n "${docker_env[POSTGRES_USER]}" ]; then
+      docker compose exec -it ${container} psql -U ${docker_env[POSTGRES_USER]} -d ${docker_env[POSTGRES_DB]}
+    else
+      printf $TEXT_INFO_DARK "Docker database setting not found."
+      to doc bash ${container}
+    fi
   fi
 ;;
 
@@ -814,28 +884,27 @@ bl )
   set )
     if expr "${args[2]}" : "[0-9]*" &> /dev/null; then
       local branch_name=$(git rev-parse --abbrev-ref HEAD)
-      local backlog_task_id="${BACKLOG_PREFIX}-${args[2]}"
+      local backlog_issue_key="${BACKLOG_PREFIX}-${args[2]}"
 
-      set_ini "${store_key_prefix}${branch_name} = ${backlog_task_id}" ${store_ini} --section=backlog_task_id
-      printf $TEXT_SUCCESS "Backlog課題番号を登録しました。[${branch_name} → ${backlog_task_id}]"
+      set_ini "${store_key_prefix}${branch_name} = ${backlog_issue_key}" ${store_ini} --section=backlog_issue_key
+      printf $TEXT_SUCCESS "Backlog課題番号を登録しました。[${branch_name} → ${backlog_issue_key}]"
     else
-      printf $TEXT_ARGUMENT_ERROR "bl set <project_id>"
+      exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
     fi
     ;;
   * )
     local branch_name=$(git rev-parse --abbrev-ref HEAD)
-    local stored_task_id=$(parse_ini ${SCRIPT_DIR}/config/store.ini --section=backlog_task_id --key=${store_key_prefix}${branch_name})
+    local stored_issue_key=$(parse_ini ${SCRIPT_DIR}/config/store.ini --section=backlog_issue_key --key=${store_key_prefix}${branch_name})
 
-
-
-    if [ -n "$stored_task_id" ]; then
+    if [ -n "$stored_issue_key" ]; then
       # iniに設定されたブランチがあれば課題を開く
-      printf $TEXT_INFO "Found a backlog task relation. [${branch_name} → ${stored_task_id}]"
-      open "https://hotfactory.backlog.jp/view/${stored_task_id}"
+      printf $TEXT_INFO "Found a backlog task relation. [${branch_name} → ${stored_issue_key}]"
+      open "https://hotfactory.backlog.jp/view/${stored_issue_key}"
     elif [[ $branch_name == "${BACKLOG_PREFIX}-"* ]]; then
+      local backlog_issue_key=$(echo $branch_name | sed "s/\(${BACKLOG_PREFIX}-[0-9]*\).*/\1/")
       # Backlog課題形式のブランチ名であれば課題を開く
-      printf $TEXT_INFO "Open backlog project... (${branch_name})"
-      open "https://hotfactory.backlog.jp/view/${branch_name}"
+      printf $TEXT_INFO "Open backlog project... (${backlog_issue_key})"
+      open "https://hotfactory.backlog.jp/view/${backlog_issue_key}"
     else
       # 一致しなければ課題一覧を開く
       printf $TEXT_INFO "Open backlog projects index..."
@@ -891,6 +960,39 @@ telescope )
   open_in_browser "$(project_origin)/telescope/queries" ${browser_options}
 ;;
 
+## [react <command>] React関連のコマンド群
+react )
+  case $args[1] in
+  ### [react component] Reactのコンポーネントファイルを作成する
+  component )
+    local components_dir="${PROJECT_DIR}/src/components"
+    if [ ! -e $component_dir ]; then
+      printf $TEXT_DANGER "componentsディレクトリが見つかりませんでした"
+      return
+    fi
+
+    echo -n "${COLOR_INFO}Component Name: ${COLOR_RESET}"
+    local component_name
+    read component_name
+    if [ -z "$component_name" ]; then;
+      return
+    fi
+
+    local target_dir="${components_dir}/${component_name}"
+    if [ -e $target_dir ]; then
+      printf $TEXT_DANGER "${target_dir}はすでに存在します"
+      return
+    fi
+    mkdir $target_dir
+    echo "import styles from './index.module.css';\n\ninterface Props {\n  children: React.ReactNode;\n}\n\n/** \n *\n * @param props.children - \n * @return\n */\nexport default function ${component_name}({ children }: Props) {\n  return (\n    <div className={styles.root}>\n      \n    </div>\n  );\n}" >> $target_dir/index.tsx
+    echo ".root {\n  \n}" >> $target_dir/index.module.css
+    printf $TEXT_SUCCESS "${component_name}コンポーネントを追加しました"
+    ;;
+  * )
+    exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
+  esac
+;;
+
 ## [swift <command>] Swift関連のコマンド群
 swift )
   case $args[1] in
@@ -901,8 +1003,8 @@ swift )
 
     # カラーコードが6桁でなければエラー
     if [[ $(echo -n $code | wc -c | xargs) != 6 ]]; then
-      printf $TEXT_ARGUMENT_ERROR "to swift color <color_code> / Color code must be specified in 6 digits."
-      return
+      printf $TEXT_DANGER "Color code must be specified in 6 digits."
+      exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
     fi
 
     local digits=${args[digits]:=3}
@@ -912,16 +1014,23 @@ swift )
     printf $TEXT_SUCCESS "Color(red: ${red}, green: ${green}, blue: ${blue})"
     ;;
   * )
-    printf $TEXT_ARGUMENT_ERROR "to swift <command>"
+    exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
   esac
 ;;
 
 ## [timer] 経過時間計測を開始する
 timer )
-  ## --clear タイマーを全削除する
+  ## --clean タイマーを全削除する
   if [ -n "$args[clean]" ]; then
-    # タイマー判別のため、小数点5位までゼロを指定しておく
+    local process_count=$(ps | grep "sleep [0-9]\+.00000" | wc -l | sed -e 's/ //g')
+
+    if [[ ${process_count} == 0 ]]; then
+      printf $TEXT_WARNING "No timer running."
+      exit $EXIT_CODE_ERROR &> /dev/null
+    fi
+
     ps | grep "sleep [0-9]\+.00000" | awk '{print $1}' | xargs kill -9
+    printf $TEXT_SUCCESS "${process_count} timer(s) removed."
     return
   fi
 
@@ -940,8 +1049,8 @@ timer )
     done
   fi
 
-  ### [timer <time> <message>] 指定時刻もしくは一定時間のタイマーをセットする
   if [[ ${args[1]} == *:* ]]; then
+    ### [timer <MM:SS> <message>] 指定時刻のタイマーをセットする
     local target=$(date -jf "%H:%M:%S" "${args[1]}:00" +%s)
     local now=$(date +%s)
     local seconds=$((${target} - ${now}))
@@ -951,9 +1060,9 @@ timer )
       local seconds=$((${seconds} + 86400))
     fi
 
-    [ -n "${args[2]}" ] && local message=${args[2]} || local message="タイマーが終了しました ($(date -jf "%s" ${target} +%H:%M))"
+    [ -n "${args[2]}" ] && local message=${args[2]} || local message="Notice from tool script. ($(date -jf "%s" ${target} +%H:%M))"
   else
-    # 相対時間で指定
+    ### [timer <duration><unit> <message>] 一定時間のタイマーをセットする
     local quantity=$(echo ${args[1]} | sed 's/^\([0-9]*\).*$/\1/')
     case $(echo ${args[1]} | sed 's/^[0-9]*//') in
     h|hour|hours )
@@ -969,21 +1078,20 @@ timer )
       local seconds=${quantity}
       ;;
     * )
-      printf $TEXT_WARNING "引数が正しくありません"
-      exit 1
+      exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
     esac
 
-    [ -n "${args[2]}" ] && local message=${args[2]} || local message="タイマーが終了しました (${quantity} ${unit} from $(date +%H:%M))"
+    [ -n "${args[2]}" ] && local message=${args[2]} || local message="${quantity} ${unit} from $(date +%H:%M)"
   fi
 
   if [ ${seconds} -gt 10800 ]; then
-    printf $TEXT_ARGUMENT_ERROR "The timer for no more than 3 hours."
-    exit 1
+    printf $TEXT_DANGER "The timer for no more than 3 hours."
+    exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
   fi
 
-  # タイマーを登録
+  # タイマーを登録 (削除時のプロセス判別のため小数点5位までゼロを指定しておく)
   (
-    sleeptool
+    sleep "${seconds}.00000"
     osascript -e "display notification \"${message}\" with title \"Tool Script\""
   ) &
   printf $TEXT_SUCCESS "The timer has been set. (${message})"
@@ -1060,12 +1168,13 @@ help | '' )
   print_help
 ;;
 
-## [<etc>] アクション名が一致しなかった場合は追加のアクションを読み込み
+## [<etc>] アクション名が一致しなかった場合はアドオンファイルからアクションを実行
 * )
   local addon_path="${SCRIPT_DIR}/config/addon.sh"
   if [ -f "${addon_path}" ]; then
     source ${addon_path}
     local exit_code=$?
+    exit $exit_code &> /dev/null
   fi
 
   exit $EXIT_CODE_ACTION_NOT_FOUND &> /dev/null
@@ -1075,7 +1184,11 @@ esac)
 # サブシェル終了後のメインシェル処理 (終了コード2の場合)
 local exit_code=$?
 case ${exit_code} in
-10 )
+$EXIT_CODE_WRONG_ARGUMENT )
+  printf $TEXT_DANGER "Wrong argument or option."
+  to ${1} --help
+  ;;
+$EXIT_CODE_WITH_ADDITION )
   if [[ ${exit_code} == 10 ]]; then
     case $1 in
     refresh ) source $(to $@ --path) ;;
@@ -1083,7 +1196,7 @@ case ${exit_code} in
     esac
   fi
   ;;
-27 )
-  printf $TEXT_WARNING "Undefined action. ($1)"
+$EXIT_CODE_ACTION_NOT_FOUND )
+  printf $TEXT_DANGER "Undefined action. ($1)"
 esac
 }

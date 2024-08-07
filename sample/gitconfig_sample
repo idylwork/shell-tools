@@ -13,19 +13,16 @@
 	# 日本語ファイル名をエンコードしない
 	quotepath = false
 [alias]
-	# graphlog コミット履歴を装飾して表示
-	graphlog = log --pretty=format:'%Cgreen[%cd] %Cblue%h %Cred<%cn> %Creset%s' --date=short  --decorate --graph --branches --tags --remotes
+  # graph コミット履歴を装飾して表示
+	graph = log --pretty=format:'%Cgreen[%cd] %Cblue%h %Cred<%cn> %Creset%s' --date=short  --decorate --graph --branches --tags --remotes
 [init]
-	# デフォルトブランチをmainに
+  # デフォルトブランチをmainに
 	defaultBranch = main
 [commit]
-	# コミットメッセージのデフォルト
-	template = ~/.zsh/git/commitMsg
-[fetch]
-	# リモートリポジトリで削除されたブランチを削除
-	prune = true
+  # コミットメッセージのデフォルト
+	template = ~/.zsh/git/stCommitMsg
 [push]
-	# upstreamを指定しなくても同名ブランチとしてプッシュする
+  # upstreamを指定しなくても同名ブランチとしてプッシュする
 	default = current
 [difftool "sourcetree"]
 	cmd = opendiff \"$LOCAL\" \"$REMOTE\"
