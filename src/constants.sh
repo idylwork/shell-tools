@@ -1,7 +1,7 @@
 # スクリプト定数ファイル
 
 # 一時変数 (標準出力を伴う関数で戻り値を一時格納)
-local FUNCTION_RETURN=""
+local FUNCTION_REPLY=""
 # 区切り文字のデフォルトを保持
 local DEFAULT_IFS=$IFS
 
@@ -34,6 +34,9 @@ local -r TEXT_SUCCESS="${COLOR_SUCCESS}%s\n${COLOR_RESET}"
 local -r TEXT_INFO="${COLOR_INFO}%s\n${COLOR_RESET}"
 local -r TEXT_INFO_DARK="${COLOR_INFO_DARK}%s\n${COLOR_RESET}"
 local -r TEXT_MUTED="${COLOR_MUTED}%s\n${COLOR_RESET}"
+
+# 特殊文字
+local -r PREV_LINE="\033[A\r"
 
 # 終了コード
 local -r EXIT_CODE_SUCCESS=0

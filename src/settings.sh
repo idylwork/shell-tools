@@ -13,6 +13,7 @@ alias history='fc -lt '%F %T' 1'
 alias mkdir='mkdir -p'
 alias back='pushd'
 alias diff='diff -U1'
+
 # ドメインの問い合わせにGoogle Public DNSを使用する
 alias dig='dig @8.8.8.8'
 

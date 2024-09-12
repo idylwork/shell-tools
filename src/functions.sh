@@ -1,6 +1,27 @@
 # スクリプト関数ファイル
 # 汎用定数が読み込まれている前提の関数あり
 
+# マルチバイトを2文字として文字丸めする
+# @param string 文字列
+# @param number 最大文字数
+text_ellipses() {
+  local text=""
+  local count=0
+  for (( i=0; i<${#1}; i++ )); do
+    local char=${1:$i:1}
+    echo -n $char
+
+    text+=$char
+    if expr "$char" : "^[ -~]$" &> /dev/null; then
+      count=$(( $count + 1 ))
+    else
+      count=$(( $count + 2 ))
+    fi
+    [ $count -ge $2 ] && break
+  done
+  echo $text
+}
+
 # 環境名の入力揺れを吸収する
 # @param string 環境名
 # @returns string 環境名 [local: ローカル, staging: ステージング, production: 本番]
@@ -26,31 +47,31 @@ parse_arguments() {
   for i in $(seq $#); do
     local argument=${${@}[$i]}
     case $argument in
-      - )
-        # 引数
-        options[$((index++))]=${argument}
-        ;;
-      -[0-9]=* | -[0-9][0-9]=* | --[0-9]=* | --[0-9][0-9]=* )
-        # 数値キーのオプションはインデックスを上書きしないようにハイフンを削除しない
-        local option_text="${argument}"
-        [[ ${option_text} == *=* ]] && options[${option_text%=*}]=${option_text#*=} || options[${option_text}]=1
-        ;;
-      --*)
-        # オプション
-        local option_text=${argument#--}
-        [[ ${option_text} == *=* ]] && options[${option_text%=*}]=${option_text#*=} || options[${option_text}]=1
-        ;;
-      -* )
-        # オプション
-        local option_text=${argument#-}
-        [[ ${option_text} == *=* ]] && options[${option_text%=*}]=${option_text#*=} || options[${option_text}]=1
-        ;;
-      '' )
-        ;;
-      * )
-        # 引数
-        options[$((index++))]=${argument}
-        ;;
+    - )
+      # 引数
+      options[$((index++))]=${argument}
+      ;;
+    -[0-9]=* | -[0-9][0-9]=* | --[0-9]=* | --[0-9][0-9]=* )
+      # 数値キーのオプションはインデックスを上書きしないようにハイフンを削除しない
+      local option_text="${argument}"
+      [[ ${option_text} == *=* ]] && options[${option_text%=*}]=${option_text#*=} || options[${option_text}]=1
+      ;;
+    --*)
+      # オプション
+      local option_text=${argument#--}
+      [[ ${option_text} == *=* ]] && options[${option_text%=*}]=${option_text#*=} || options[${option_text}]=1
+      ;;
+    -* )
+      # オプション
+      local option_text=${argument#-}
+      [[ ${option_text} == *=* ]] && options[${option_text%=*}]=${option_text#*=} || options[${option_text}]=1
+      ;;
+    '' )
+      ;;
+    * )
+      # 引数
+      options[$((index++))]=${argument}
+      ;;
     esac
   done
 
@@ -119,7 +140,7 @@ get_project_root() {
 # @option --section=<string> 対象とするセクション名 (未指定の場合は全項目)
 # @option --key=<string> 特定の項の値を出力する
 # @returns string 変数宣言コード
-# @example source <(parse_ini ./example.ini $2 | sed "s/^ */local /g")
+# @example source <(parse_ini ./example.ini --section=example_section | sed "s/^ */local /g")
 # @example parse_ini ./example.ini --key=EXAMPLE
 parse_ini() {
   local -A args=($(parse_arguments ${@}))
@@ -143,7 +164,7 @@ parse_ini() {
 
   if [ -n "${args[key]}" ]; then
     # キーが指定された場合は値のみを返す
-    echo ${attributes} | grep "^${args[key]} *=" | head -1 | sed "s/^${args[key]} *= *//"
+    echo ${attributes} | grep "^ *${args[key]} *=" | head -1 | sed "s/^ *${args[key]} *= *//" | sed 's/^"\(.*\)"$/\1/'
   else
     # 空白行を除外・イコール周辺のスペース削除して項目行を出力
     echo ${attributes} | sed '/^$/d' | sed 's/ *= */=/g'
@@ -217,12 +238,31 @@ browser_keydown() {
   osascript -e "tell application \"${BROWSER}\" to activate" -e "tell application \"System Events\" to keystroke $1"
 }
 
+# SafariのアクティブなタブでJavaScriptを即時実行する
+# @param string $1 JavaScriptコード
 browser_javascript() {
   osascript -l JavaScript -e "function run(arguments) {
     const safari = Application('Safari');
-    safari.doJavaScript(arguments[0], { in: safari.windows.at(0).currentTab });
+    return safari.doJavaScript(result = '(() => { ' + arguments[0] + ' })()', { in: safari.windows.at(0).currentTab });
   }" $1
 }
+
+# SafariのアクティブなタブでJavaScriptを実行し、戻り値があるまで待機する
+# @param string $1 JavaScriptコード (returnで文字列を返すようにする)
+browser_javascript_await() {
+  osascript -l JavaScript -e "function run(arguments) {
+    const safari = Application('Safari');
+
+    for (let i = 0; i < 10; i += 1) {
+      if (i > 0) delay(1);
+      const safari = Application('Safari');
+      const ret = safari.doJavaScript(result = '(() => { ' + arguments[0] + ' })()', { in: safari.windows.at(0).currentTab });
+      if (ret) return ret;
+    }
+    return null;
+  }" $1
+}
+
 
 # ブラウザで文字列を入力する (マルチバイト非対応)
 # @param string $1 入力するキー
@@ -249,32 +289,16 @@ browser_input_new() {
 
 # セレクタからDOM要素を検索してテキストを取得
 # @param string $1 CSSセレクタ
-browser_find_element() {
-  osascript -l JavaScript -e "function run(arguments) {
-    const safari = Application('Safari');
-    return safari.doJavaScript(arguments[0], { in: safari.windows.at(0).currentTab }) ?? '';
-  }" "result = document.querySelector('$1').innerText"
+browser_inner_text() {
+  browser_javascript_await "return document.querySelector('$1')?.innerText;"
 }
 
-## ブラウザでセレクタを入力
-browser_selector_input() {
-  # browser_javascript $(cat <<- EOS
-  #   console.log(document.querySelector('${1}'));
-  #   document.querySelector('${1}').focus();
-  #   document.querySelector('${1}').select();
-	# EOS
-  # )
-  # sleep 1
-
-  echo $2 | pbcopy
-  browser_keydown '"a" using {command down}'
-  browser_keydown '"v" using {command down}'
-  sleep 1
-  browser_javascript $(cat <<- EOS
-    document.activeElement.blur();
-	EOS
-  )
-  sleep 1
+# ブラウザでセレクタに文字列を入力
+# @param string $1 セレクタ
+# @param string $2 入力値
+browser_input_value() {
+  sleep 0.01
+  browser_javascript_await "const element = document.querySelector('$1'); if (element) { element.value = '$2'; return true; }" &> /dev/null
 }
 
 ## AppleScriptでダイアログを表示する
@@ -319,8 +343,7 @@ watch_vm_file() {
   -c ) local call='| ccze -A' || local call='';;
   * )
     local call=''
-    for word in ${@:2}
-    do
+    for word in ${@:2}; do
       if [[ "$word" =~ ^sed ]]; then
         local sed=`echo ${word} | sed -e 's/^sed //'`
         [ -e $is_sed ] && local call="${call} | sed -e '${sed}'" || local call="${call} -e '${sed}'"
@@ -496,29 +519,31 @@ print_help() {
   print_heading "Personal Tool Script"
   echo $message |
     sed -e "s/^ *#\{3,\} /  /g" | # インデントを調整してコメントアウトを削除
-    sed -e "s/^ *## //g" | # コメントアウトを削除
+    sed -e "s/^ *## \([-\[]\)/\1/g" | # アクションとコメントのコメントアウトを削除
+    sed -e "s/^ *## / /g" | # その他コメントアウトを削除してインデントを調整
     sed -e "s/^\( *-\{1,2\}[a-z][a-z-]*\)\(.*\)/  ${COLOR_NOTICE}\1\2${COLOR_RESET}/g" | # オプションを書式調整
-    sed -e "s/\[\(.*\)\]/${COLOR_WARNING}\1${COLOR_RESET}/g" # []を着色
+    sed -e "s/\[\(.*\)\]/${COLOR_MUTED}to ${COLOR_RESET}${COLOR_WARNING}\1${COLOR_RESET}/g" # []を着色
 }
 
-# OK・Cancelの選択を受け付ける
-# `set -e`が有効ならコマンド単体使用でOKでないときは中断
-# @returns OKなら終了ステータス0、Cancelなら終了ステータス1
-# @example read_confirmation || return 1
-read_confirmation() {
-  read_selection Cancel OK
-  local answer=${FUNCTION_RETURN}
-
-  case $answer in
-  OK ) return $EXIT_CODE_SUCCESS;;
-  Cancel ) return $EXIT_CODE_ERROR;;
-  esac
+# デフォルト値ありの文字列入力
+# @param string デフォルト値
+read_with_default() {
+  local input2
+  read input2
+  input=$(echo $input2 | sed 's/ //')
+  echo "[[$input]]"
+  if [[ "$input" == "" ]]; then
+    echo "${PREV_LINE}$1"
+    FUNCTION_REPLY=$1
+    return
+  fi
+  FUNCTION_REPLY=input
 }
 
 # 選択表示
 # @param string $@ 選択肢 (1つしかなければ選択肢を表示しない)
-# @returns $FUNCTION_RETURN 選択した項目が格納される
-# @example read_selection ls diff export import && local result=${FUNCTION_RETURN}
+# @returns $FUNCTION_REPLY 選択した項目が格納される
+# @example read_selection ls diff export import && local result=${FUNCTION_REPLY}
 read_selection() {
   local items=(${@})
   local current_index=1
@@ -526,7 +551,7 @@ read_selection() {
   if [ ${#items[@]} -le 1 ]; then
     local item=${items[1]}
     echo "${COLOR_SUCCESS}➣ ${item}${COLOR_RESET}"
-    FUNCTION_RETURN=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/' )
+    FUNCTION_REPLY=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/' )
     return
   fi
 
@@ -560,7 +585,7 @@ read_selection() {
     $'\x0a' | $'\x20' ) # Enter or Space
       echo ""
       local item=$items[${current_index}]
-      FUNCTION_RETURN=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/')
+      FUNCTION_REPLY=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/')
       break
       ;;
     esac
@@ -569,16 +594,17 @@ read_selection() {
 
 # 選択表示 (縦)
 # @param string $@ 選択肢 (1つしかなければ選択肢を表示しない `: `区切りで入力すると前方部分だけを返す)
-# @returns $FUNCTION_RETURN 選択した項目が格納される
-# @example read_selection_long "1: one" "2: two" "3: three" && local result=${FUNCTION_RETURN}
+# @returns $FUNCTION_REPLY 選択した項目が格納される
+# @example read_selection_long "1: one" "2: two" "3: three" && local result=${FUNCTION_REPLY}
 read_selection_long() {
   local items=(${@})
   local current_index=1
+  local line_limit=$(($(stty size | awk '{print $2}') * 0.5))
 
   if [ ${#items[@]} -le 1 ]; then
     echo "${COLOR_SUCCESS}➣ ${items[1]}${COLOR_RESET}"
     local item=${items[1]}
-    FUNCTION_RETURN=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/' )
+    FUNCTION_REPLY=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/' )
     return
   fi
 
@@ -586,16 +612,17 @@ read_selection_long() {
   render_selection() {
     # カーソル位置を戻す
     for item in "${items[@]}"; do
-      echo -n "\033[A\r"
+      echo -n "${PREV_LINE}"
     done
 
+    local item
     local index=0
     for item in "${items[@]}"; do
       index=$((${index} + 1))
       if [[ $index == $current_index ]]; then
-        echo "${COLOR_SUCCESS}➣ ${item}${COLOR_RESET}"
+        echo "${COLOR_SUCCESS}➣ ${item:0:$line_limit}${COLOR_RESET}"
       else
-        echo "${COLOR_MUTED}  ${item}${COLOR_RESET}"
+        echo "${COLOR_MUTED}  ${item:0:$line_limit}${COLOR_RESET}"
       fi
     done
   }
@@ -621,11 +648,53 @@ read_selection_long() {
     $'\x0a' | $'\x20' ) # Enter or Space
       echo ""
       local item=${items[${current_index}]}
-      FUNCTION_RETURN=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/' )
+      FUNCTION_REPLY=$(echo ${item} | sed 's/^\([^:]*\): .*/\1/' )
       break
       ;;
     esac
   done
+}
+
+# OK・Cancelの選択を受け付ける
+# `set -e`が有効ならコマンド単体使用でOKでないときは中断
+# @returns OKなら終了ステータス0、Cancelなら終了ステータス1
+# @example read_confirmation || return 1
+read_confirmation() {
+  read_selection Cancel OK
+  local answer=${FUNCTION_REPLY}
+
+  case $answer in
+  OK ) return $EXIT_CODE_SUCCESS;;
+  Cancel ) return $EXIT_CODE_ERROR;;
+  esac
+}
+
+# 環境環境を選択する
+# @param string 環境名 (入力がなければ)
+# @returns $FUNCTION_REPLY 環境名
+read_environment() {
+  if [ -n "$1" ]; then
+    FUNCTION_REPLY=$(parse_environment $1)
+  else
+    local -a envs=("local")
+    [ -n "$SSH_NAME_STAGING" ] && envs+=("staging")
+    [ -n "$SSH_NAME_PRODUCTION" ] && envs+=("production")
+    read_selection $envs
+  fi
+}
+
+# Gitのブランチを選択する
+# @param string 環境名 (入力がなければ)
+# @returns $FUNCTION_REPLY 環境名
+read_git_branch() {
+  local option=""
+  [ -n "$(git branch --list ${BASE_BRANCH})" ] && option="--no-merged=${BASE_BRANCH}"
+
+  IFS=$'\n'
+  local -a branches=($(git branch --format="%(refname:short): %(subject)" --sort=-authordate ${option} | head -10 ))
+  IFS=$DEFAULT_IFS
+
+  read_selection_long $branches
 }
 
 # 特定の文字列以降を取得する
@@ -642,4 +711,32 @@ grep_after() {
 # 関数をすべて削除
 unset_functions() {
   unset -f $(cat $FUNCTIONS_PATH | grep -E '^ *[a-zA-Z_]+\(\) \{' | sed -e 's|^\(.*\)() {.*|\1|' | xargs -L 1)
+}
+
+# 小数点以下の桁数を指定して割り算する
+# @param number $1
+# @param number $2 (以降すべての引数を割り算する)
+# @option --digits=<number> 小数点以下の桁数
+# @returns 計算結果を出力
+math_division() {
+  local -a numbers=()
+  local digits=5
+  for argument in ${@}; do
+    case $argument in
+    -d=[0-9]* | -digits=[0-9]* | --digits=[0-9]* )
+      # 小数点桁数
+      digits=${argument##*=}
+      ;;
+    [0-9]* )
+      numbers+=("${argument}")
+      ;;
+    esac
+  done
+
+  local number=$((${numbers[1]} * 10 ** ${digits}))
+  for divisor in ${numbers:1}; do
+    number=$((${number} / ${divisor}))
+  done
+
+  echo $(printf "%.$((${digits}))f" $((number * 0.1 ** ${digits} )) | sed 's/[0\.]*$//')
 }
