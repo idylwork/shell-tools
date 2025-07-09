@@ -6,7 +6,7 @@
 # @exit $EXIT_CODE_WITH_ADDITION メインシェルで追加処理を実行
 # @exit 27 アクションが見つからない
 to() {
-# 定数の読み込み
+# 定数の読み込み (関数内ローカル)
 source ~/.zsh/src/constants.sh
 
 (
@@ -14,18 +14,28 @@ source ~/.zsh/src/constants.sh
 # サブシェル自体の戻り値は影響しない
 set -e
 
+# スクリプト内のカレントディレクトリ移動時に標準出力しない
+cd() { builtin cd "$@" 1> /dev/null }
+
 # 関数の読み込み
 source $FUNCTIONS_PATH
 
 # 引数とオプションを取得 ${args[1]}: 引数1 ${args[some_key]}: オプション(指定なしで値は1)
 # $optionsは順次$argsに統一していく
 local action=$1
-local -A args=($(parse_arguments ${@:2}))
+parse_arguments ${@:2}; local -A args=(${(kv)ARGUMENTS_REPLY})
 local -A options=(${(kv)args})
 
 # --help オプションが指定された場合はヘルプメッセージを表示して完了
-if [[ -n "${options[help]}" ]]; then
-  print_help $action
+if [[ -n "${args[help]}" ]]; then
+  print_heading "Personal Tool Script"
+  print_help --action=${action}
+
+  local addon=$(cat "${SCRIPT_DIR}/config/addon.sh" | text_subtract "^\(${PROJECT_NAME}.*\|[a-zA-Z].* | ${PROJECT_NAME}\) )$" "^[a-zA-Z].* )$")
+  if [ -n "${addon}" ]; then
+    print_heading "Project Addon Script"
+    print_help ${addon} --action=${action}
+  fi
   return
 fi
 
@@ -40,7 +50,15 @@ case $action in
 
 ## [help] ヘルプメッセージを表示
 help | '' )
+  print_heading "Personal Tool Script"
   print_help
+
+  # プロジェクト限定のスクリプト
+  local addon=$(cat "${SCRIPT_DIR}/config/addon.sh" | text_subtract "^\(${PROJECT_NAME}.*\|[a-zA-Z].* | ${PROJECT_NAME}\) )$" "^[a-zA-Z].* )$")
+  if [ -n "${addon}" ]; then
+    print_heading "Project Addon Script"
+    print_help ${addon}
+  fi
 ;;
 
 ## [test] 設定値のチェック
@@ -122,23 +140,12 @@ test )
 
 # [init] プロジェクトの初期設定
 init )
-  # WIP
-  echo "${COLOR_INFO_DARK}project name:${COLOR_RESET} ${PROJECT_NAME}"
-
-  local default
-
-  # BASE_BRANCH
-  default=$(parse_ini ${SCRIPT_DIR}/config/projects.ini --section=${BASE_BRANCH} --key=BASE_BRANCH)
-  [ -z "$default" ] && default=$(git branch -r | grep HEAD | cut -d'/' -f3)
-  echo -n "${COLOR_INFO_DARK}base branch (${default}):${COLOR_RESET} "
-  read_with_default ${default} && local base_branch=${FUNCTION_REPLY}
-
-  # PROJECT_NAME
-  default=$(parse_ini ${SCRIPT_DIR}/config/projects.ini --section=${PROJECT_NAME} --key=DEPLOY_TYPE)
-  [ -z "$default" ] && default=none
-  echo "${COLOR_INFO_DARK}deploy type (${default}):${COLOR_RESET}"
-  read_selection_long "none: なし" "dist: distフォルダ経由でファイルリリース" "deployer: リモートサーバーのでDeployer" && local DEPLOY_TYPE=${FUNCTION_REPLY}
-  [[ "${DEPLOY_TYPE}" == "none" ]] && DEPLOY_TYPE=""
+  printf $TEXT_INFO "Enter project settings..."
+  echo "${COLOR_INFO_DARK}PROJECT_NAME:${COLOR_RESET} ${PROJECT_NAME}"
+  read_project_prop BASE_BRANCH $(git branch -r | grep HEAD | cut -d'/' -f3)
+  read_project_prop BRANCH_PREFIX
+  read_project_prop BACKLOG_PROJECT_KEY
+  read_project_prop DEPLOY_TYPE "none: なし" "dist: distフォルダ経由でファイルリリース" "deployer: リモートサーバーのDeployer"
 ;;
 
 ## [ws <name>] ワークスペースディレクトリ内を曖昧検索してパスを出力する 引数分ディレクトリを深掘りする
@@ -252,7 +259,7 @@ sync )
   local sub_action=${args[1]}
   if [ -z "${sub_action}" ]; then
     printf $TEXT_INFO "Choose sub action."
-    read_selection_long "ls: ファイル一覧" "diff: 差分一覧" "export: 同期保存" "import: 同期読み込み" && sub_action=${FUNCTION_REPLY}
+    read_selection_long "ls\tファイル一覧" "diff: 差分一覧" "export\t同期保存" "import\t同期読み込み" && sub_action=${FUNCTION_REPLY}
   fi
 
   case ${sub_action} in
@@ -262,7 +269,7 @@ sync )
     ;;
   ### [sync diff] エクスポートされている設定ファイルとの差分を表示
   diff )
-    diff -r ${SCRIPT_DIR} ${EXPORT_DIR} | sed "s/^\(-\{1,3\} .*\)$/${COLOR_DANGER}\1${COLOR_RESET}/" | sed "s/^\(+\{1,3\} .*\)$/${COLOR_SUCCESS}\1${COLOR_RESET}/"
+    diff -r ${EXPORT_DIR} ${SCRIPT_DIR} | sed "s/^\(-\{1,3\} .*\)$/${COLOR_DANGER}\1${COLOR_RESET}/" | sed "s/^\(+\{1,3\} .*\)$/${COLOR_SUCCESS}\1${COLOR_RESET}/"
     ;;
   ### [sync export] スクリプトと設定ファイルをエクスポートする
   export )
@@ -287,11 +294,93 @@ sync )
   esac
 ;;
 
+## [backup] バックアップを更新する
+backup )
+  local from_paths=()
+  local to_paths=()
+  local path_keys=()
+
+  # 設定INI backup_pathsセクションから対象パスを取得
+  IFS=$'\n'
+  local stored_paths=($(parse_ini ${SCRIPT_DIR}/config/store.ini --section=backup_paths))
+  IFS=$DEFAULT_IFS
+  printf $TEXT_INFO_DARK "Load backup settings."
+  local stored_path
+  for stored_path in ${stored_paths}; do
+    local path_pair=$(echo ${stored_path} | sed 's/^[a-z_-]*=//')
+    local path_key=$(echo ${stored_path} | sed 's/^\([a-z_-]*\)=.*$/\1/')
+    local from_path=$(echo ${path_pair} | sed -r 's/^(.*[^\]) .*$/\1/' | sed 's/\\ / /g' | sed "s/^~/${HOME//\//\\/}/")
+    if [ ! -d "${from_path}" ]; then
+      printf $TEXT_MUTED "  ${path_key}: ${from_path} (Skipping because not exists.)"
+      continue
+    fi
+    local to_path=$(echo ${path_pair} | sed -r 's/^.*[^\] (.*)$/\1/' | sed 's/\\ / /g' | sed 's/^\([^/]\)/\/\1/')
+
+    path_keys+=("${path_key}")
+    from_paths+=("${from_path}")
+    to_paths+=("${to_path}")
+    printf $TEXT_INFO "  ${path_key}: ${from_path} -> ${to_path}"
+  done
+  echo ''
+
+  IFS=$'\n'
+  local volumes=($(mount | grep '^[^ ]* on /Volumes' | sed -r 's/^.* on \/Volumes\/(.*) \([a-z ,]*\)$/\1/'))
+  IFS=$DEFAULT_IFS
+  if [ -z "${volumes}" ]; then
+    printf $TEXT_WARNING "No volumes found."
+    exit $EXIT_CODE_ERROR &> /dev/null
+  fi
+
+  printf $TEXT_INFO_DARK "Choose a volume to backup."
+  read_selection_long "${volumes[@]}" && local volume=${FUNCTION_REPLY}
+
+  # 設定INI backup_pathsセクションから対象パスを取得
+  IFS=$'\n'
+  local stored_paths=($(parse_ini ${SCRIPT_DIR}/config/store.ini --section=backup_paths))
+  IFS=$DEFAULT_IFS
+
+  printf $TEXT_INFO_DARK "Start backup to ${volume}."
+  local i
+  for ((i=1; i<=${#from_paths[@]}; i++)); do
+    local from_path=${from_paths[$i]}
+    local to_path=${to_paths[$i]}
+    local path_key=${path_keys[$i]}
+    local mode='Add only'
+    local rsync_options=('-aru' "--exclude='/.git'" "--exclude='.DS_Store'")
+
+    # _archive で終わるキーの場合は差分削除せず追加と更新のみ行う
+    if [[ "${path_key}" != *_archive ]]; then
+      mode=''
+      rsync_options+=('--delete' '--prune-empty-dirs')
+    fi
+
+    local volume_path="/Volumes/${volume}${to_path}"
+    if [ ! -d ${volume_path} ]; then
+      printf $TEXT_WARNING "Target directory not found. Create it? (${volume_path})"
+      read_confirmation
+      mkdir -p ${volume_path}
+    fi
+
+    local progress_message="${from_path} → ${volume_path}"
+    [ -n "${mode}" ] && progress_message="${progress_message} (${mode})"
+
+    ## --verbose 進捗をファイルごとに表示する
+    if [ -n "${args[d]}" ] || [ -n "${args[dry-run]}" ]; then
+      printf $TEXT_INFO "${progress_message}"
+    elif [ -n "${args[v]}" ] || [ -n "${args[verbose]}" ]; then
+      printf $TEXT_INFO "${progress_message}"
+      rsync ${rsync_options} -C --filter=":- .gitignore" --progress ${from_path} ${volume_path}
+    else
+      rsync ${rsync_options} -C --filter=":- .gitignore" ${from_path} ${volume_path} 1> /dev/null & progress ${progress_message}
+    fi
+  done
+;;
+
 ## [timer] 経過時間計測を開始する
 timer )
   ## --clean タイマーを全削除する
   if [ -n "$args[clean]" ]; then
-    local process_count=$(ps | grep "sleep [0-9]\+.00000" | wc -l | sed -e 's/ //g')
+    local process_count=$(ps | grep "sleep [0-9]\+.00000" | line_count)
 
     if [[ ${process_count} == 0 ]]; then
       printf $TEXT_WARNING "No timer running."
@@ -401,7 +490,7 @@ doc|docker )
   clean|sweep )
     local container_ids=$(docker ps -q)
     if [ -n "$container_ids" ]; then
-      local count=$(docker stop $(docker ps -q) | wc -l | sed -e 's/ //g')
+      local count=$(docker stop $(docker ps -q) | line_count)
       printf $TEXT_SUCCESS "${count} containers stopped!"
     else
       printf $TEXT_WARNING "No containers running."
@@ -424,7 +513,7 @@ doc|docker )
       docker compose exec ${container} /bin/sh -c "echo ${text} >> ${bash_profile_path}"
       docker compose cp ${SCRIPT_DIR}/src/docker_profile.sh ${container}:${docker_profile_path}
     fi
-う
+
     # コンテナへの接続
     printf $TEXT_INFO "Start connecting on ${container}... (docker compose exec -it ${container} bash --login)"
     docker compose exec -it -e PS1="\[\e[1;32m\][docker:${container}] \[\e[0;32m\]\W\[\e[m\] " ${container} bash --login
@@ -472,11 +561,11 @@ git )
     ;;
   ### [git code] GitHubのCodeページを開く
   code )
-    open -a $BROWSER $(github_url)
+    browser_open $(github_url)
     ;;
   ### [git i] GitHubのIssuesページを開く
   issue|is|i )
-    open -a $BROWSER "$(github_url)/issues"
+    browser_open "$(github_url)/issues"
     ;;
   ### [git p] GitHubのPull Requestsページを開く
   pulls|pr|p )
@@ -580,36 +669,74 @@ git )
   ;;
   ### [git stash] 現在の変更点を一時退避する (新規追加したファイルも含む)
   stash )
+    ### --find=<filename> スタッシュの中からファイル名を検索する
+    if [ -n "$args[find]" ]; then
+      local target_objects=()
+      printf $TEXT_INFO "Finding stash objects..."
+      local objects=($(git stash list --format=%gd))
+      for object in "${objects[@]}"; do
+        local files=$(git stash show ${object} --name-only | grep $args[find])
+        printf ${TEXT_INFO_DARK} "${object}"
+        if [ -n "${files}" ]; then
+          printf ${TEXT_MUTED} "${files}"
+          target_objects+=(${object})
+        else
+          echo -n "${PREV_LINE}"
+        fi
+      done
+      if [ -n "${target_objects[*]}" ]; then
+        printf $TEXT_INFO "Choose a stash object."
+        read_selection_long ${target_objects[@]} && local target_object=${FUNCTION_REPLY}
+
+        local files=($(git stash show ${target_object} --name-only | grep $args[find]))
+        for file in "${files[@]}"; do
+          print_heading "${file}"
+          printf ${TEXT_MUTED} "git diff HEAD..${target_object} -- ${file}"
+          git diff HEAD..${target_object} -- ${file}
+        done
+      fi
+      return
+    fi
+
+    ### --commit 現在のコミット内容をスタッシュに退避する
+    if [ -n "$options[commit]" ]; then
+      printf $TEXT_INFO "Stashing current commit..."
+      local commit_message=$(git show -s --format=%s HEAD)
+      git checkout --detach HEAD
+      git reset --soft HEAD^
+      git stash -m "[Tool Script] ${commit_message}"
+      git checkout -
+      return
+    fi
+
     git stash --include-untracked
   ;;
   ### [git newpr] 新規にプルリクエストを作成する
   newpr )
+    [[ "$BACKLOG_SPACE_ID" == *.* ]] && local backlog_hostname="${BACKLOG_SPACE_ID}" || local backlog_hostname="${BACKLOG_SPACE_ID}.backlog.jp"
+
     local branch_name=$(git rev-parse --abbrev-ref HEAD)
-    if [[ $branch_name == "${BACKLOG_PREFIX}-"* ]]; then
+    if [[ $branch_name == "${BACKLOG_PROJECT_KEY}-"* ]]; then
       # Backlog課題形式のブランチ名であれば課題名を取得
-      local backlog_issue_key=$(echo $branch_name | sed "s/\(${BACKLOG_PREFIX}-[0-9]*\).*/\1/")
-      open "https://hotfactory.backlog.jp/view/${backlog_issue_key}"
-      sleep 2
+      local backlog_issue_key=$(echo $branch_name | sed "s/\(${BACKLOG_PROJECT_KEY}-[0-9]*\).*/\1/")
+      browser_open "https://${backlog_hostname}/view/${backlog_issue_key}"
       local task_name=$(browser_inner_text '#summary')
+      browser_close
     fi
 
-    open "$(github_url)/compare/${branch_name}?expand=1"
-    sleep 2
+    local heading="##"
+
+    ### --base <branch_name> プルリクエストのベースブランチを指定する
+    if [ -n "$args[base]" ]; then
+      local url="$(github_url)/compare/${args[base]}...${branch_name}?expand=1"
+    else
+      local url="$(github_url)/compare/${branch_name}?expand=1"
+    fi
 
 
-    browser_input_value '[name="pull_request[title]"]' "${branch_name} ${task_name}"
-    browser_input_value '[name="pull_request[body]"]' "## Backlog\nhttps://hotfactory.backlog.jp/view/${backlog_issue_key}\n\n## 対応内容\n"
-
-
-
-
-    # sleep 4
-    # browser_input_new "${branch_name} ${task_name}"
-    # if [ -n "${task_name}" ]; then
-    #   browser_input_new "## Backlog\nhttps://hotfactory.backlog.jp/view/${backlog_issue_key}\n\n## 対応内容\n" 1
-    # else
-    #   browser_input_new "## 対応内容\n" 1
-    # fi
+    browser_open ${url}
+    browser_set_input '[name="pull_request[title]"]' "${branch_name} ${task_name}"
+    browser_set_input '[name="pull_request[body]"]' "${heading} Backlog\nhttps://${backlog_hostname}/view/${backlog_issue_key}\n\n${heading} 対応内容\n"
     ;;
   log )
     git log --graph --oneline --decorate
@@ -651,7 +778,7 @@ master|main|staging|stg|develop|dev|$BASE_BRANCH )
 
 ## [new <branch_name>] 新しいブランチを作成してチェックアウトする
 new )
-  if expr "$2" : "[0-9]*" &> /dev/null; then
+  if [[ $2 =~ ^[0-9] ]]; then
     local branch_name="${BRANCH_PREFIX}$2"
   else
     local branch_name="$2"
@@ -662,7 +789,24 @@ new )
 
 ## [rename] ディレクトリ内のファイル名一括変更
 rename )
-  local files=($(ls -1F | grep -v / | xargs))
+  IFS=$'\n'
+  local items=($(ls -1F))
+  IFS=$DEFAULT_IFS
+
+  ## --dir ディレクトリ内のファイルではなくディレクトリを対象にする
+  [ -n "${args[dir]}" ] && local directory_mode=true || local directory_mode=false
+
+  local files=()
+  local item
+  for item in "${items[@]}"; do
+    [[ "${item}" == */ ]] && local is_directory=true || local is_directory=false
+    [ ${is_directory} = ${directory_mode} ] && files+=(${item})
+  done
+
+  if [ -z "${files}" ]; then
+    printf $TEXT_WARNING "No files found in current directory."
+    return $EXIT_CODE_ERROR &> /dev/null
+  fi
 
   printf $TEXT_INFO $files
   printf $TEXT_WARNING "ファイル名を入力してください..."
@@ -709,7 +853,7 @@ open )
   printf $TEXT_INFO "Choose a server to open."
   read_environment ${args[1]} && local env=${FUNCTION_REPLY}
   [ -n "${options[alt]}" ] && browser_options=(--alt) || browser_options=()
-  open_in_browser "$(project_origin ${env})${URL_PATH_FRONT}" ${browser_options}
+  browser_open "$(project_origin ${env})${URL_PATH_FRONT}" ${browser_options}
 ;;
 
 ## [admin <environment>] Webサイトの管理画面を開く
@@ -717,7 +861,8 @@ open )
 admin )
   printf $TEXT_INFO "Choose a server to open."
   read_environment ${args[1]} && local env=${FUNCTION_REPLY}
-  open_in_browser "$(project_origin ${env})${URL_PATH_ADMIN}" ${browser_options}
+  [ -n "${options[alt]}" ] && browser_options=(--alt) || browser_options=()
+  browser_open "$(project_origin ${env})${URL_PATH_ADMIN}" ${browser_options}
 ;;
 
 ## [diff] ベースブランチからの差分を確認
@@ -764,8 +909,6 @@ diff )
 ## --all ファイルを除外しない
 ## --copy 実行せずコマンドをコピーする
 dist )
-  local base_commit=$(git merge-base ${BASE_BRANCH} HEAD)
-
   case $args[1] in
   ### [dist ls] ファイル確認
   ls )
@@ -818,7 +961,9 @@ dist )
     if [[ -n "${options[commit]}" ]]; then
       local files=$(git diff --name-only --diff-filter=MAR HEAD^..HEAD)
       local target_name="直前のコミットの変更"
+      printf $TEXT_WARNING "$(git log -1 --format='%as: %s')"
     else
+      local base_commit=$(git merge-base ${BASE_BRANCH} HEAD)
       local files=$(git diff --name-only --diff-filter=MAR ${base_commit}..HEAD)
       local target_name="${BASE_BRANCH}ブランチからの差分"
     fi
@@ -867,7 +1012,7 @@ deploy )
 
     tree $DEST_DIR
 
-    if check_config_exists; then
+    if [ -e "${DEST_DIR}/config" ] || [ -e "${DEST_DIR}/dist/vagrant" ]; then
       printf $TEXT_WARNING "設定ファイルが含まれています！"
     else
       if [ -z "$args[y]" ]; then
@@ -888,7 +1033,7 @@ deploy )
     esac
 
     printf $TEXT_SUCCESS "Deployed!"
-    ;;
+  ;;
   deployer )
     # DEPLOY_TYPE=deployer リモートのDeployerをSSHで起動
     local branch=${args[2]}
@@ -903,56 +1048,41 @@ deploy )
 
     case $env in
     production )
+      local ssh_name=$SSH_NAME_PRODUCTION
+
       [ -v $SSH_NAME_PRODUCTION ] && printf $TEXT_DANGER "SSH name is not configured. (${PROJECT_NAME} ${env})" && exit $EXIT_CODE_ERROR
       echo $MESSAGE_PRODUCTION_ACCESS
 
-      printf $TEXT_WARNING "サーバー『${ssh_name}』にリリースしますか？"
+      local branch="master"
+      printf $TEXT_INFO "Would you like to deploy to ${PROJECT_NAME}... (${branch} >> ${env})"
       read_confirmation
-      return
-      ssh ${SSH_NAME_PRODUCTION} -t "cd ${APP_DIR}; bash --login"
+      ssh ${SSH_NAME_PRODUCTION} -t "cd ~/deployer; ~/.config/composer/vendor/bin/dep deploy"
       ;;
     staging )
+      local ssh_name=$SSH_NAME_STAGING
       [ -v $SSH_NAME_STAGING ] && printf $TEXT_DANGER "SSH name is not configured. (${PROJECT_NAME} ${env})" && exit $EXIT_CODE_ERROR
 
-      echo ""
+      printf $TEXT_INFO "Deployment to ${PROJECT_NAME}... (${branch} >> ${env})"
       printf $TEXT_INFO "Choose a branch to deploy."
       read_git_branch && local branch=${FUNCTION_REPLY}
-
-      printf $TEXT_INFO "Deployment to ${PROJECT_NAME}... (${branch} >> ${env})"
-
-      return
-      ssh ${SSH_NAME_STAGING} -t "cd ~/deployer; dep deploy staging --branch=${branch}"
+      ssh ${SSH_NAME_STAGING} -t "cd ~/deployer; ~/.config/composer/vendor/bin/dep deploy --branch=${branch}"
       ;;
-    local )
+    * )
       printf $TEXT_MUTED "Cancelled."
       ;;
     esac
-
-
-    ;;
-  esac
-;;
-
-## [build] リリースファイルを作成する (未メンテナンス)
-build )
-  local base_commit="master"
-  local release_commit="$BASE_BRANCH"
-
-  # distフォルダをリセット
-  rm -rf ${DEST_DIR} &> /dev/null
-  mkdir ${DEST_DIR}
-
-  case $2 in
-  ## --copy 実行せずコマンドをコピーする
-  --copy )
-    git diff --name-only --diff-filter=MAR ${base_commit}..${release_commit} | grep -vE ^app/config | xargs -I {} echo "rsync -R {}  ${DEST_DIR}" | pbcopy
-    printf $TEXT_WARNING "${BASE_BRANCH}ブランチからの差分ファイル出力用rsyncコマンドをコピーしました"
-    ;;
-  *)
-    git diff --name-only --diff-filter=MAR ${base_commit}..${release_commit} | grep -vE ^app/config | xargs -I {} rsync -R {}  ${DEST_DIR}
-    zip -r "${DEST_DIR}/${BACKLOG_PREFIX}.zip" "${DEST_DIR}/${DEPLOY_DIST_TARGET_DIR}"
-    printf $TEXT_WARNING "${BASE_BRANCH}ブランチからの差分ファイルをdistフォルダにコピーしました"
-    ;;
+  ;;
+  addon )
+    local addon_path="${SCRIPT_DIR}/config/addon.sh"
+    if [ -f "${addon_path}" ]; then
+      source ${addon_path}
+      local exit_code=$?
+      exit $exit_code &> /dev/null
+    fi
+  ;;
+  * )
+    exit $EXIT_CODE_ERROR &> /dev/null
+  ;;
   esac
 ;;
 
@@ -1083,6 +1213,162 @@ log )
   esac
 ;;
 
+## [node] Node.jsのパッケージマネージャの操作を行う
+node | n )
+  # 直近のpackage.jsonのあるディレクトリを探す
+  local node_root=$(node_root)
+  local node_action=${args[1]}
+
+  # VoltaのNodeのバージョンを.node-versionファイルから切り替える
+  # if [ -f ${node_root}/.node-version ]; then
+  #   local version=$(cat ${node_root}/.node-version)
+  #   volta install node@${version} --quiet
+  # fi
+
+  # プロジェクトで使用しているパッケージマネージャを自動で判定
+  if [ -f "${node_root}/package-lock.json" ]; then
+    local pm="npm"
+  elif [ -f "${node_root}/yarn.lock" ]; then
+    local pm="yarn"
+  elif [ -f "${node_root}/pnpm-lock.yaml" ]; then
+    local pm="pnpm"
+  fi
+  [ "${pm}" = "npm" ] && local is_npm=true || local is_npm=false
+  if [ -z "${pm}" ]; then
+    printf $TEXT_DANGER "Package lock file not found. (${node_root})"
+    exit $EXIT_CODE_ERROR &> /dev/null
+  fi
+
+  # コマンドを指定しない場合はScript設定から選択する
+  if [ -z "${node_action}" ]; then
+    local -a scripts=($(awk '/"scripts"/,/^ *}/' "package.json" | grep ' *": "' | sed 's/ *\"\([^\"]*\)\":.*/\1/'))
+    read_selection_long ${scripts[@]} && node_action=${FUNCTION_REPLY}
+  fi
+
+  local command="";
+  case ${node_action} in
+  ### [node install] パッケージのインストール
+  i | install | add )
+    ### --reload パッケージのキャッシュを削除する
+    if [ -n "${args[reload]}" ]; then
+      rm -rf ${node_root}/node_modules
+      printf $TEXT_MUTED "Node modules deleted."
+    fi
+
+    if [ -n "${args[2]}" ]; then
+      ${is_npm} && command="install" || command="add"
+    else
+      command="install"
+    fi
+  ;;
+  ### [node uninstall] パッケージのアンインストール
+  uninstall | remove )
+    ${is_npm} && $command="uninstall" || $command="remove"
+  ;;
+  ### [node update] ロックファイルのバージョンアップ
+  update )
+    ${is_npm} && command="update" || command="upgrade"
+  ;;
+  ### [node upgrade] パッケージのアップグレード
+  upgrade )
+    local option=""
+    [ -n "${args[latest]}" ] && option="--latest"
+    if ${is_npm}; then
+      npm-check-updates -i ${args[@:2]} ${option}
+    else
+      [ "${pm}" = "yarn" ] && yarn upgrade-interactive ${args[@:2]} ${option} || pnpm update -i ${args[@:2]} ${option}
+    fi
+  ;;
+  ### [node exec] パッケージを実行
+  exec )
+    command="exec"
+  ;;
+  ### [node run] package.jsonのスクリプトを実行
+  run )
+    ${is_npm} && command="run" || command=""
+  ;;
+  ### [node dev] package.jsonのスクリプトから dev もしくは start を実行
+  dev )
+    command="start"
+    if awk '/"scripts"/,/\}/' "${node_root}/package.json" | grep -q '^ *"dev":'; then
+      ${is_npm} && command="run dev" || command="dev"
+    fi
+
+    # エディタを開く
+    which code &> /dev/null && code ${node_root}
+  ;;
+  ### [node version] VoltaでプロジェクトのNodeバージョンを固定
+  version )
+    ### [node version install] Nodeをインストール
+    if [ "$args[2]" = "install" ]; then
+      printf $TEXT_INFO "Choose a Node.js version to install."
+      # local versions=($(curl -s https://nodejs.org/dist/index.json | grep -o '"version": *"v[^"]*"' | sed -E 's/"version": *"v([^"]*)"/\1/' | sort -Vr | awk -F. '!seen[$1]++'))
+      local versions=($(nodenv install -l | grep '^[0-9]'))
+      read_selection_long "${versions[@]}" && local version=${FUNCTION_REPLY}
+      # volta install node@${version}
+      nodenv local ${version}
+      printf $TEXT_SUCCESS "Node.js ${version} has been installed."
+      return
+    fi
+
+    printf $TEXT_INFO "Choose the Node.js version for this project."
+    # local versions=($(volta list node --format plain | sed -n 's/.*@\([0-9.]*\).*/\1/p'))
+    local versions=($(nodenv versions | sed 's/^[* ] \([^ ]*\).*/\1/'))
+    read_selection_long "${versions[@]}" && local version=${FUNCTION_REPLY}
+
+    echo "${version}" > ${node_root}/.node-version
+    printf $TEXT_SUCCESS "Node.js local version: ${version}"
+    return
+  ;;
+  * )
+    ${is_npm} && command="run ${node_action}" || command="${node_action}"
+  esac
+
+  printf $TEXT_MUTED "$ ${pm} ${command} ${args[@:2]}"
+  if [ -n "${command}" ]; then
+    ${pm} $(echo $command[@]) ${args[@:2]}
+  fi
+;;
+
+## [curl <url>] APIリクエストを実行する
+curl )
+  local url=${args[1]}
+  local method="GET"
+  local parameters=""
+  if [ -z "${url}" ]; then
+    echo -n "${COLOR_INFO}URL: ${COLOR_RESET}"
+    read url
+    if [ -z "${url}" ]; then
+      printf $TEXT_DANGER "URL is empty."
+      exit $EXIT_CODE_ERROR &> /dev/null
+    fi
+
+    echo "${COLOR_INFO}Method:${COLOR_RESET}"
+    read_selection "GET" "POST" && method=${FUNCTION_REPLY}
+
+    if [ "${method}" != "GET" ]; then
+      echo "${COLOR_INFO}Parameters:${COLOR_RESET} ${COLOR_MUTED}(空白行でEnterすると確定)${COLOR_RESET}"
+      local line
+      while true; do
+        read line
+        [ -z "${line}" ] && break
+        parameters+="${line}\n"
+      done
+    fi
+  else
+    echo "${COLOR_INFO}URL:${COLOR_RESET} ${url}"
+    echo "${COLOR_INFO}Method:${COLOR_RESET} ${method}"
+  fi
+
+  local command="curl -sL -X ${method} '${url}'"
+  [ -n "${parameters}" ] && local command="curl -sL '${url}' -X ${method} -H 'Content-Type: application/json' -d '${parameters}'"
+  printf $TEXT_MUTED ${command}
+  local res=$(eval ${command})
+  printf ${TEXT_INFO} "Response: "
+  echo ${res} | python3 -m json.tool | sed "s/\"\([^\"]*\)\":/${COLOR_NOTICE}\1${COLOR_RESET}:/"
+  echo ""
+;;
+
 ## [aws] プロジェクト名をプロファイル名としてAWS CLIを使用する
 aws )
   aws --profile ${PROJECT_NAME} ${@:2}
@@ -1090,28 +1376,35 @@ aws )
 
 ## [bl] Backlogをブラウザで開く
 bl )
-  [ ! $BACKLOG_PREFIX ] && printf $TEXT_DANGER "Backlog prefix is not configured. (${PROJECT_NAME})" && return 1
+  [[ "$BACKLOG_SPACE_ID" == *.* ]] && local backlog_hostname="${BACKLOG_SPACE_ID}" || local backlog_hostname="${BACKLOG_SPACE_ID}.backlog.jp"
+
+  # プロジェクトキーの設定がなければ設定を開始
+  if [ ! $BACKLOG_PROJECT_KEY ]; then
+    printf $TEXT_DANGER "Backlog prefix is not configured. (${PROJECT_NAME})"
+    read_project_prop BACKLOG_PROJECT_KEY && BACKLOG_PROJECT_KEY=${FUNCTION_REPLY}
+    [ ! $BACKLOG_PROJECT_KEY ] && exit $EXIT_CODE_ERROR &> /dev/null
+  fi
   local store_ini="${SCRIPT_DIR}/config/store.ini"
   local store_key_prefix="${PROJECT_NAME}_"
 
   case $args[1] in
   ### [bl <number>] 現在ブランチ名に応じて課題を開く
   [0-9]* )
-    open "https://hotfactory.backlog.jp/view/${BACKLOG_PREFIX}-${args[1]}"
+    browser_open "https://${backlog_hostname}/view/${BACKLOG_PROJECT_KEY}-${args[1]}"
     ;;
   ### [bl ls] Backlog課題一覧を開く
   ls | l* )
-    open "https://hotfactory.backlog.jp/find/${BACKLOG_PREFIX}"
+    browser_open "https://${backlog_hostname}/find/${BACKLOG_PROJECT_KEY}"
     ;;
   ### [bl wiki] BacklogのWikiホームを開く
   wiki | w* )
-    open "https://hotfactory.backlog.jp/wiki/${BACKLOG_PREFIX}/Home"
+    browser_open "https://${backlog_hostname}/wiki/${BACKLOG_PROJECT_KEY}/Home"
     ;;
   ### [bl set <project_id>] Backlog課題番号とブランチ名の対応リストを追加する
   set )
     if expr "${args[2]}" : "[0-9]*" &> /dev/null; then
       local branch_name=$(git rev-parse --abbrev-ref HEAD)
-      local backlog_issue_key="${BACKLOG_PREFIX}-${args[2]}"
+      local backlog_issue_key="${BACKLOG_PROJECT_KEY}-${args[2]}"
 
       set_ini "${store_key_prefix}${branch_name} = ${backlog_issue_key}" ${store_ini} --section=backlog_issue_key
       printf $TEXT_SUCCESS "Backlog課題番号を登録しました。[${branch_name} → ${backlog_issue_key}]"
@@ -1123,19 +1416,21 @@ bl )
     local branch_name=$(git rev-parse --abbrev-ref HEAD)
     local stored_issue_key=$(parse_ini ${SCRIPT_DIR}/config/store.ini --section=backlog_issue_key --key=${store_key_prefix}${branch_name})
 
+    [[ "$BACKLOG_SPACE_ID" == *.* ]] && local backlog_hostname="${BACKLOG_SPACE_ID}" || local backlog_hostname="${BACKLOG_SPACE_ID}.backlog.jp"
+
     if [ -n "$stored_issue_key" ]; then
       # iniに設定されたブランチがあれば課題を開く
       printf $TEXT_INFO "Found a backlog task relation. [${branch_name} → ${stored_issue_key}]"
-      open "https://hotfactory.backlog.jp/view/${stored_issue_key}"
-    elif [[ $branch_name == "${BACKLOG_PREFIX}-"* ]]; then
-      local backlog_issue_key=$(echo $branch_name | sed "s/\(${BACKLOG_PREFIX}-[0-9]*\).*/\1/")
+      browser_open "https://${backlog_hostname}/view/${stored_issue_key}"
+    elif [[ $branch_name == "${BACKLOG_PROJECT_KEY}-"* ]]; then
+      local backlog_issue_key=$(echo $branch_name | sed "s/\(${BACKLOG_PROJECT_KEY}-[0-9]*\).*/\1/")
       # Backlog課題形式のブランチ名であれば課題を開く
       printf $TEXT_INFO "Open backlog project... (${backlog_issue_key})"
-      open "https://hotfactory.backlog.jp/view/${backlog_issue_key}"
+      browser_open "https://${backlog_hostname}/view/${backlog_issue_key}"
     else
       # 一致しなければ課題一覧を開く
       printf $TEXT_INFO "Open backlog projects index..."
-      open "https://hotfactory.backlog.jp/find/${BACKLOG_PREFIX}"
+      browser_open "https://${backlog_hostname}/find/${BACKLOG_PROJECT_KEY}"
     fi
     ;;
   esac
@@ -1157,7 +1452,7 @@ pmlog )
 telescope )
   local browser_options=()
   [ -n "${options[alt]}" ] && browser_options+="--alt"
-  open_in_browser "$(project_origin)/telescope/queries" ${browser_options}
+  browser_open "$(project_origin)/telescope/queries" ${browser_options}
 ;;
 
 ## [react <command>] React関連のコマンド群
@@ -1165,8 +1460,10 @@ react )
   case $args[1] in
   ### [react component] Reactのコンポーネントファイルを作成する
   component )
-    local components_dir="${PROJECT_DIR}/src/components"
-    if [ ! -e $component_dir ]; then
+    local node_root=$(node_root)
+
+    local components_dir="${node_root}/src/components"
+    if [ ! -e $components_dir ]; then
       printf $TEXT_DANGER "componentsディレクトリが見つかりませんでした"
       return
     fi
@@ -1178,14 +1475,68 @@ react )
       return
     fi
 
-    local target_dir="${components_dir}/${component_name}"
-    if [ -e $target_dir ]; then
-      printf $TEXT_DANGER "${target_dir}はすでに存在します"
+    local jsx_count=$(find ${components_dir} -maxdepth 1 -type f -name "*.js" -o -name "*.jsx" -o -name "*.tsx" | wc -l)
+    local dir_count=$(find ${components_dir} -maxdepth 1 -type d | wc -l)
+    if [ ${dir_count} -gt ${jsx_count} ]; then
+      local file_name="index"
+      local target_dir="${components_dir}/${component_name}"
+      if [ -e $target_dir ]; then
+        printf $TEXT_DANGER "${target_dir}はすでに存在します"
+        return
+      fi
+      mkdir $target_dir
+    else
+      local file_name="${component_name}"
+      local target_dir="${components_dir}"
+    fi
+
+    echo "import styles from './index.module.css';\n\ninterface Props {\n  children: React.ReactNode;\n}\n\n/** \n *\n * @param props.children - \n * @return\n */\nexport default function ${component_name}({ children }: Props) {\n  return (\n    <div className={styles.root}>\n      \n    </div>\n  );\n}" >> ${target_dir}/${file_name}.tsx
+    echo ".root {\n  \n}" >> ${target_dir}/${file_name}.module.css
+    printf $TEXT_SUCCESS "${component_name}コンポーネントを追加しました"
+    ;;
+
+  ### [react component] Reactのコンポーネントファイルを作成する
+  component2 )
+    local components_dir="${PROJECT_DIR}/src/components"
+    if [ ! -e $components_dir ]; then
+      printf $TEXT_DANGER "componentsディレクトリが見つかりませんでした"
       return
     fi
-    mkdir $target_dir
-    echo "import styles from './index.module.css';\n\ninterface Props {\n  children: React.ReactNode;\n}\n\n/** \n *\n * @param props.children - \n * @return\n */\nexport default function ${component_name}({ children }: Props) {\n  return (\n    <div className={styles.root}>\n      \n    </div>\n  );\n}" >> $target_dir/index.tsx
-    echo ".root {\n  \n}" >> $target_dir/index.module.css
+
+    echo -n "${COLOR_INFO}Component Name: ${COLOR_RESET}"
+    local component_name
+    read component_name
+    if [ -z "$component_name" ]; then;
+      return
+    fi
+
+    local jsx_count=$(find ${components_dir} -maxdepth 1 -type f -name "*.js" -o -name "*.jsx" -o -name "*.tsx" | wc -l)
+    local dir_count=$(find ${components_dir} -maxdepth 1 -type d | wc -l)
+
+    if [ ${dir_count} -ge ${jsx_count} ]; then
+      local jsx_dir="${components_dir}/${component_name}"
+      local css_dir="${components_dir}/${component_name}"
+      local file_name="index"
+      if [ -e $jsx_dir ]; then
+        printf $TEXT_DANGER "${jsx_dir}はすでに存在します"
+        return
+      fi
+      # mkdir $jsx_dir
+    else
+      local jsx_dir="${components_dir}"
+      local css_dir="${PROJECT_DIR}/src/assets/styles"
+      local file_name="${component_name}"
+      local css_import_path="./index.module.css"
+    fi
+    echo "-----"
+    local jsx_path="${jsx_dir}/${file_name}.$(existing_file_extension ${jsx_dir} tsx ts jsx js)"
+    local css_path="${css_dir}/${file_name}.$(existing_file_extension ${css_dir} module.scss module.css scss css)"
+
+    echo ${jsx_path} ${css_path}
+    return
+
+    echo "import styles from '${css_import_path}';\n\ninterface Props {\n  children: React.ReactNode;\n}\n\n/** \n *\n * @param props.children - \n * @return\n */\nexport default function ${component_name}({ children }: Props) {\n  return (\n    <div className={styles.root}>\n      \n    </div>\n  );\n}" >> ${tsx_path}
+    echo ".root {\n  \n}" >> ${css_path}
     printf $TEXT_SUCCESS "${component_name}コンポーネントを追加しました"
     ;;
   * )
@@ -1216,6 +1567,139 @@ swift )
     printf $TEXT_INFO "CSS3 : rgb(${red}, ${green}, ${blue})"
     printf $TEXT_INFO "Swift: Color(red: $(math_division ${red} 255 -d=${digits}), green: $(math_division ${green} 255 -d=${digits}), blue: $(math_division ${blue} 255 -d=${digits}))"
     ;;
+  clean )
+    printf $TEXT_DANGER "Xcodeのキャッシュを削除します"
+    read_confirmation
+
+    rm -rf ~/Library/Caches/com.apple.dt.Xcode
+    rm -rf ~/Library/Developer/Xcode/DerivedData
+    rm -rf ~/Library/Developer/Xcode/UserData/Previews
+    rm -rf ~/Library/Developer/XCPGDevices
+    rm -rf ~/Library/Developer/Xcode/iOS\ DeviceSupport
+    ;;
+  * )
+    exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
+  esac
+;;
+
+## [bing <message>] Bing AI Copilotを操作する
+bing )
+  local message=""
+  printf $TEXT_INFO "Bing AIへのメッセージを入力してください (空白行でEnterすると確定)"
+  local line
+  while true; do
+    read line
+    [ -z "${line}" ] && break
+    message+="${line}\n"
+  done
+
+  browser_open "https://copilot.microsoft.com" --skip
+  browser_javascript_element "#userInput" "element.click();"
+  sleep 0.5
+  browser_set_input "#userInput" "$(echo ${message})"
+  osascript -l JavaScript -e "function run(arguments) {
+    const se = Application('System Events');
+    se.keystroke('.');
+    se.keyCode(51);
+  }"
+  sleep 0.5
+  browser_javascript_element "[title=\"メッセージの送信\"]" "element.click();"
+;;
+
+## [browser] ブラウザに関する操作
+browser )
+  case $args[1] in
+  ### [browser crawl] 指定のURLからリンクされている同一ドメインのページに再起的にアクセスする
+  ### --exclude=<pattern> URLに部分一致したら対象から除外する
+  crawl )
+    local urls=("${args[2]}")
+    local -A hash=()
+    local index=1
+
+    while [ ${#urls[@]} -ge ${index} ]; do
+      local url="${urls[${index}]}"
+      browser_open --sync --background ${urls[${index}]} --mode=new
+
+      local new_urls=($(browser_javascript_sync_background "
+        const [excludes = ''] = arguments;
+        const urls = new Set();
+
+        document.querySelectorAll('a').forEach((link) => {
+          let url;
+          try { url = new URL(link.href) } catch (e) { return }
+          if (url.hostname !== location.hostname
+            || /\.(jpe?g|png|gif|pdf)$/.test(url.pathname.split('/').at(-1))
+            || (excludes && url.pathname.includes(excludes))) return;
+
+          urls.add(\`\${url.origin}\${url.pathname}\${url.search}\`);
+        });
+
+        [...document.forms].forEach((form) => {
+          if (form.method !== 'get') return;
+          let url;
+          try { url = new URL(form.action) } catch (e) { return }
+          urls.add(\`\${url.origin}\${url.pathname}\${url.search}\`);
+        });
+
+        return urls.size ? [...urls].join('\n') : 'empty';
+      " ${args[exclude]} "${urls}"))
+
+      [[ ${new_urls} != "empty" ]] && urls=($(printf "%s\n" "${urls[@]}" "${new_urls[@]}" | awk '!seen[$0]++'))
+      index=$(( $index + 1 ))
+    done
+
+    urls=($(echo "${urls[*]}" | tr ' ' '\n' | sort))
+    printf $TEXT_INFO ${urls}
+  ;;
+  ### [browser script] 表示中のページからフォーム入力用のスクリプトコードを自動生成する
+  script )
+    local script=$(cat <<- 'EOS'
+      const map = new Map();
+      const selectedInputName = new Set();
+      [...document.forms[0].elements].forEach((input) => {
+        if (!input.name) return;
+
+        switch (input.type) {
+        case 'hidden':
+        case 'submit':
+        case 'button':
+          break;
+        case 'radio':
+        case 'checkbox':
+          if (selectedInputName.has(input.name)) return;
+
+          let prevValue = '';
+          if (input.checked) {
+            selectedInputName.add(input.name);
+          } else {
+            prevValue = map.get(input.name);
+          }
+          map.set(input.name, prevValue ? `${prevValue} '${input.value}'` : `browser_set_input '[name="${input.name}"]' '${input.value}'`);
+          break;
+        case 'select-one':
+          const options = [...input.options];
+          let selection = input.options[input.selectedIndex].getAttribute('value');
+          if (!selection) {
+            selection = options.find((option) => option.getAttribute('value'))?.getAttribute('value') ?? '';
+          };
+
+          map.set(input.name, `browser_set_input '[name="${input.name}"]' '${selection}'`);
+          break;
+        default:
+          map.set(input.name, `browser_set_input '[name="${input.name}"]' '${input.value}'`);
+        }
+      });
+
+      return [`browser_open '${location.href}'`, ...map.values()].join('\n');
+		EOS
+    )
+    echo -n ${COLOR_INFO_DARK}
+    browser_javascript_sync ${script}
+    echo ${COLOR_RESET}
+  ;;
+  '' )
+    browser_focus
+  ;;
   * )
     exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
   esac
@@ -1232,18 +1716,6 @@ selenium )
     printf $TEXT_WARNING "  Please run \`brew install chromedriver jq\` and permit it in system preferences"
     return
   fi
-;;
-
-## [jstest] テストコード (TODO: 動作確認が終わり次第削除)
-jstest )
-  open "https://github.com/HOT-FACTORY/fv-app-ios//compare/FV_APP-334?expand=1"
-  sleep 2
-
-
-  browser_inner_text 'body'
-  browser_input_value '[name="pull_request[title]"]' 'タイトルだぞ'
-  browser_input_value '[name="pull_request[body]"]' 'いい"かあ'
-
 ;;
 
 ## [<etc>] アクション名が一致しなかった場合はアドオンファイルからアクションを実行
@@ -1267,14 +1739,16 @@ $EXIT_CODE_WRONG_ARGUMENT )
   to ${1} --help
   ;;
 $EXIT_CODE_WITH_ADDITION )
-  if [[ ${exit_code} == 10 ]]; then
-    case $1 in
-    refresh ) source $(to $@ --path) ;;
-    mkdir | .. ) cd $(to $@ --path) &> /dev/null ;;
-    esac
-  fi
+  case $1 in
+  refresh ) source $(to $@ --path) ;;
+  mkdir | .. ) cd $(to $@ --path) &> /dev/null ;;
+  esac
   ;;
 $EXIT_CODE_ACTION_NOT_FOUND )
   printf $TEXT_DANGER "Undefined action. ($1)"
+  ;;
+$EXIT_CODE_TIMEOUT )
+  printf $TEXT_DANGER "Action timed out. ($1)"
+  ;;
 esac
 }

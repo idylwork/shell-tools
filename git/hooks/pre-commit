@@ -1,5 +1,4 @@
-#!/bin/sh
-#
+#!/bin/zsh
 # 引数なしの"git commit"で呼び出される
 # "0"以外のステータスを返すとコミットを中断する
 
@@ -23,7 +22,7 @@ git_hook_process() {
   local allownonascii=$(git config --type=bool hooks.allownonascii)
 
   # コミット対象ファイル (削除ファイル以外)
-  local filenames=$(git diff --cached --name-only --diff-filter=d ${against})
+  local filenames=($(git diff --cached --name-only --diff-filter=d ${against}))
 
   # ファイル名に半角文字以外が使われていないか
   if [ "$allownonascii" != "true" ] && test $(echo ${filenames} | LC_ALL=C tr -d '[ -~]\n' | wc -c) != 0; then
@@ -37,11 +36,7 @@ git_hook_process() {
   local common_pattern=(${EMOJI_CHARS[*]})
 
   # デバッグコードが含まれていないか
-  local defaultIFS=$IFS
-  IFS=$'\n'
-  for filename in "$filenames"; do
-    IFS=$defaultIFS
-
+  for filename in "$filenames[@]"; do
     local extension=${filename##*.}
     case ${extension} in
     # 拡張子なしのファイル
@@ -65,7 +60,7 @@ git_hook_process() {
     local match=$(git diff --cached --diff-filter=d -U0 ${filename} | tail -n +5 | grep "^+" | grep -E $(IFS="|"; echo "${pattern[*]}"))
 
     # マッチした行があればエラー
-    if [ -n "$match" ]; then
+    if [ -n "${match}" ]; then
       printf $TEXT_DANGER "Debugging code detected!"
       printf $TEXT_WARNING "${filename}"
       printf $TEXT_WARNING "${match[*]}"
@@ -86,7 +81,7 @@ git_hook_process() {
   # fi
 
   # エラーがあればコミット中断
-  if [ "${is_error}" == "true" ]; then
+  if [ "${is_error}" = "true" ]; then
     echo ""
     printf $TEXT_WARNING "Commit blocked by pre-commit hook! You can disable this check using:"
     echo ""

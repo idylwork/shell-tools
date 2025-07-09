@@ -63,7 +63,7 @@ ws expj # example_project に移動
 source ~/.zshrc
 ```
 
-コマンドを使って設定ファイルを作成します。
+コマンドを使って設定ファイルを配置します。
 
 ```sh
 to edit --init
@@ -119,6 +119,44 @@ Git の挙動がすべてのリポジトリで変更されるため、特別な�
   - zshrc.sample `~/.zshrc`のサンプル
 
 特定のプロジェクトに関するコードや設定は`config/`配下に記載するようにしてください
+
+### projects.ini
+セクションにフォルダ名を指定すると、一致するフォルダ配下を特定のプロジェクトと紐づけることができます。
+プロジェクトに紐づく設定はここに設定します。
+`[default]`セクションのみ特別で、プロジェクトに設定がなかったときのみこの値が使用されます。
+
+- `BASE_BRANCH` Gitのベースブランチを指定します。
+- `BRANCH_PREFIX` よく使うブランチ名の接頭辞を指定します。ブランチ名を指定する際に数字のみ指定すると自動的に接頭辞が使用されます。
+- `BACKLOG_SPACE_ID` プロジェクトにBacklogがある場合、スペースIDを指定します。
+- `BACKLOG_PROJECT_KEY` プロジェクトにBacklogがある場合、プロジェクトキーを指定します。
+- `SSH_NAME_PRODUCTION` 本番サーバーのSSH接続名を指定します。
+- `SSH_NAME_STAGING` ステージングサーバーのSSH接続名を指定します。
+- `DOMAIN_PRODUCTION` 本番環境のドメインを指定します。
+- `DOMAIN_STAGING` ステージング環境のドメインを指定します。
+- `DEPLOY_TYPE` サーバーへのソースコードの反映方式を指定します。[dist: ファイルリリース, deployer: サーバー配置のDeployer, addon: addon.shの動作を参照]
+- `DEPLOY_DIST_TARGET_DIR` DEPLOY_TYPEが`dist`の場合にリリース対象にするディレクトリパス。
+- `APP_DIR` 各サーバーのアプリケーションルートパス。
+- `LOG_FILE_PATH` アプリケーションのメインとなるログファイルのパス。
+- `LOG_FILE_PATH_PRODUCTION` リモート環境でアプリケーションのメインとなるログファイルのパス。
+- `URL_PATH_FRONT` フロントのホームページパス。
+- `URL_PATH_ADMIN` 管理画面のログインページパス。
+- `VM_PLATFORM` 仮想マシンの種別 [docker: Docker, vagrant: Vagrant]
+- `VAGRANT_SSH_PROTOCOL` Vagrant環境がSSL対応になっているか。 [true, false]
+
+### store.ini
+データを保管するのに利用します。
+
+### file_backup セクション
+`to backup`コマンドに使用します。
+
+キー名は判別しやすいものを設定します。`_archive`を末尾につけるとコピー先のファイルを削除しないようになります。
+半角スペース区切りでコピー元・コピー先の順に設定します。
+ホームディレクトリは`~/`、ファイルやフォルダ名のスペースは`\ `で表現してください。
+
+```ini
+[backup_paths]
+itunes_library = ~/Music/iTunes /Music/iTunes
+```
 
 ## Homebrew
 
