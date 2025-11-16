@@ -64,27 +64,27 @@ help | '' )
 ## [test] 設定値のチェック
 test )
   local project_ini="${SCRIPT_DIR}/config/projects.ini"
-  if [[ "$(pwd)" == "${WORKSPACE}" ]]; then
+
+  if [[ "$(pwd)" == "${PROJECTS_DIR}" ]]; then
     printf $TEXT_INFO "Projects:"
 
-    local ini_sections=($(grep -E "^\[.*\]$" ${project_ini} | sed "s/^\[//" | sed "s/\]$//"))
+    # ワークスペース内のプロジェクトを表示
+    array_split "$(find ${PROJECTS_DIR} -type d -maxdepth 4 -name .git | sed "s|^${PROJECTS_DIR}/\(.*\).git$|\1|" | sort)"; local project_roots=(${FUNCTION_REPLY})
+    print_directory ${project_roots}
 
-    # INIに設定されているプロジェクトの一覧
+    # INIに設定されているプロジェクトが見つからなければエラー
+    local ini_sections=($(grep -E "^\[.*\]$" ${project_ini} | sed "s/^\[//" | sed "s/\]$//"))
     for ini_section in ${ini_sections[@]}; do
       if [[ "${ini_section}" == "default" ]]; then
         continue
       fi
 
-      if [ -d ${WORKSPACE}/${ini_section} ]; then
-        echo "  ${ini_section}"
-      else
-        local target_project_dir=$(find ${WORKSPACE} -type d -maxdepth 2 -name ${ini_section} | sed "s|${WORKSPACE}||" 2> /dev/null)
-        if [ -n "$target_project_dir" ]; then
-          echo "  ${target_project_dir:1}"
-        else
-          printf $TEXT_MUTED "  ${ini_section}"
+      for project_root in ${project_roots[@]}; do
+        if [[ "${ini_section}" == "$(basename ${project_root})" ]]; then
+          continue 2
         fi
-      fi
+      done
+      printf $TEXT_WARNING "  Project not found in workspace. ${ini_section}"
     done
     echo ""
   else
@@ -128,14 +128,6 @@ test )
     done
     echo "\n"
   fi
-
-  emoji_pattern="[\x{1F600}-\x{1F64F}]"
-  echo "$args[1]"
-
-  local string="$args[1]"
-  for (( i=0; i<${#string}; i++ )); do
-    printf "\\x%02x" "'${string:$i:1}"
-  done
 ;;
 
 # [init] プロジェクトの初期設定
@@ -150,7 +142,7 @@ init )
 
 ## [ws <name>] ワークスペースディレクトリ内を曖昧検索してパスを出力する 引数分ディレクトリを深掘りする
 ws )
-  fuzzy_dir_search ${WORKSPACE} ${@:2}
+  fuzzy_dir_search ${PROJECTS_DIR} ${@:2}
 ;;
 
 ## [cp <from> <to>] Git除外ファイルを考慮してコピー
@@ -347,6 +339,7 @@ backup )
     local path_key=${path_keys[$i]}
     local mode='Add only'
     local rsync_options=('-aru' "--exclude='/.git'" "--exclude='.DS_Store'")
+    rsync_options+=('--iconv=utf-8-mac,utf-8')
 
     # _archive で終わるキーの場合は差分削除せず追加と更新のみ行う
     if [[ "${path_key}" != *_archive ]]; then
@@ -369,11 +362,12 @@ backup )
       printf $TEXT_INFO "${progress_message}"
     elif [ -n "${args[v]}" ] || [ -n "${args[verbose]}" ]; then
       printf $TEXT_INFO "${progress_message}"
-      rsync ${rsync_options} -C --filter=":- .gitignore" --progress ${from_path} ${volume_path}
+      rsync ${rsync_options} -C --filter=":- .gitignore" ${from_path} ${volume_path} --progress
     else
       rsync ${rsync_options} -C --filter=":- .gitignore" ${from_path} ${volume_path} 1> /dev/null & progress ${progress_message}
     fi
   done
+  printf $TEXT_INFO "Backup completed."
 ;;
 
 ## [timer] 経過時間計測を開始する
@@ -548,10 +542,18 @@ git )
     printf $TEXT_INFO "Start openning $(basename ${repositry_dir}) repository on git client…"
     open -a $APP_GIT_CLIENT $PROJECT_DIR
     ;;
-  ### [git init] Git設定ファイルを編集する
-  init )
+  ### [git install] Git設定ファイルを編集する
+  install )
     code -n $SCRIPT_DIR
     code --diff ${SCRIPT_DIR}/sample/gitconfig.sample $(git config --global --list --show-origin --name-only | head -1 | sed 's/file:\(.*\)\t.*/\1/')
+    ;;
+  ### [git init] Gitリポジトリを新規構築する
+  init )
+    [ -e .git ] && throw "Git repository already exists." 2> /dev/null
+    git init
+    git commit -m "Initial commit" --allow-empty
+    git branch -M main
+    git add .
     ;;
   ### [git checkout] WIP ブランチをチェックアウトする
   checkout|co )
@@ -1218,6 +1220,7 @@ node | n )
   # 直近のpackage.jsonのあるディレクトリを探す
   local node_root=$(node_root)
   local node_action=${args[1]}
+  local node_args=(${@:3})
 
   # VoltaのNodeのバージョンを.node-versionファイルから切り替える
   # if [ -f ${node_root}/.node-version ]; then
@@ -1274,9 +1277,9 @@ node | n )
     local option=""
     [ -n "${args[latest]}" ] && option="--latest"
     if ${is_npm}; then
-      npm-check-updates -i ${args[@:2]} ${option}
+      npm-check-updates -i ${node_args} ${option}
     else
-      [ "${pm}" = "yarn" ] && yarn upgrade-interactive ${args[@:2]} ${option} || pnpm update -i ${args[@:2]} ${option}
+      [ "${pm}" = "yarn" ] && yarn upgrade-interactive ${node_args} ${option} || pnpm update -i ${node_args} ${option}
     fi
   ;;
   ### [node exec] パッケージを実行
@@ -1324,9 +1327,9 @@ node | n )
     ${is_npm} && command="run ${node_action}" || command="${node_action}"
   esac
 
-  printf $TEXT_MUTED "$ ${pm} ${command} ${args[@:2]}"
+  printf $TEXT_MUTED "$ ${pm} ${command} ${node_args}"
   if [ -n "${command}" ]; then
-    ${pm} $(echo $command[@]) ${args[@:2]}
+    ${pm} $(echo $command[@]) ${node_args}
   fi
 ;;
 
@@ -1457,10 +1460,16 @@ telescope )
 
 ## [react <command>] React関連のコマンド群
 react )
-  case $args[1] in
+  case ${args[1]} in
   ### [react component] Reactのコンポーネントファイルを作成する
   component )
-    local node_root=$(node_root)
+    local node_root=$(node_root ${PROJECT_DIR})
+
+    react_project_props && local -A next=(${(kv)FUNCTION_REPLY})
+
+
+
+
 
     local components_dir="${node_root}/src/components"
     if [ ! -e $components_dir ]; then
@@ -1468,30 +1477,30 @@ react )
       return
     fi
 
-    echo -n "${COLOR_INFO}Component Name: ${COLOR_RESET}"
-    local component_name
-    read component_name
-    if [ -z "$component_name" ]; then;
-      return
-    fi
 
+
+    read_if_empty "Component Name" ${args[2]} && local component_name=${FUNCTION_REPLY}
+
+
+
+    # コンポーネント単位でディレクトリが切られているかをディレクトリ数の比率で判断
     local jsx_count=$(find ${components_dir} -maxdepth 1 -type f -name "*.js" -o -name "*.jsx" -o -name "*.tsx" | wc -l)
     local dir_count=$(find ${components_dir} -maxdepth 1 -type d | wc -l)
     if [ ${dir_count} -gt ${jsx_count} ]; then
       local file_name="index"
       local target_dir="${components_dir}/${component_name}"
-      if [ -e $target_dir ]; then
+      if [ -e ${target_dir} ]; then
         printf $TEXT_DANGER "${target_dir}はすでに存在します"
         return
       fi
-      mkdir $target_dir
+      mkdir ${target_dir}
     else
       local file_name="${component_name}"
       local target_dir="${components_dir}"
     fi
 
-    echo "import styles from './index.module.css';\n\ninterface Props {\n  children: React.ReactNode;\n}\n\n/** \n *\n * @param props.children - \n * @return\n */\nexport default function ${component_name}({ children }: Props) {\n  return (\n    <div className={styles.root}>\n      \n    </div>\n  );\n}" >> ${target_dir}/${file_name}.tsx
-    echo ".root {\n  \n}" >> ${target_dir}/${file_name}.module.css
+    file_write "${target_dir}/${file_name}.tsx" "import styles from './index.module.css';\n\ninterface Props {\n  children: React.ReactNode;\n}\n\n/** \n *\n * @param props.children - \n * @return\n */\nexport default function ${component_name}({ children }: Props) {\n  return (\n    <div className={styles.root}>\n      \n    </div>\n  );\n}"
+    file_write "${target_dir}/${file_name}.module.css" ".root {\n  \n}"
     printf $TEXT_SUCCESS "${component_name}コンポーネントを追加しました"
     ;;
 
@@ -1510,18 +1519,18 @@ react )
       return
     fi
 
+    # コンポーネント単位でディレクトリが切られているかをディレクトリ数の比率で判断
     local jsx_count=$(find ${components_dir} -maxdepth 1 -type f -name "*.js" -o -name "*.jsx" -o -name "*.tsx" | wc -l)
     local dir_count=$(find ${components_dir} -maxdepth 1 -type d | wc -l)
-
     if [ ${dir_count} -ge ${jsx_count} ]; then
       local jsx_dir="${components_dir}/${component_name}"
       local css_dir="${components_dir}/${component_name}"
       local file_name="index"
-      if [ -e $jsx_dir ]; then
+      if [ -e ${jsx_dir} ]; then
         printf $TEXT_DANGER "${jsx_dir}はすでに存在します"
         return
       fi
-      # mkdir $jsx_dir
+      mkdir ${jsx_dir}
     else
       local jsx_dir="${components_dir}"
       local css_dir="${PROJECT_DIR}/src/assets/styles"
@@ -1529,15 +1538,39 @@ react )
       local css_import_path="./index.module.css"
     fi
     echo "-----"
-    local jsx_path="${jsx_dir}/${file_name}.$(existing_file_extension ${jsx_dir} tsx ts jsx js)"
-    local css_path="${css_dir}/${file_name}.$(existing_file_extension ${css_dir} module.scss module.css scss css)"
 
-    echo ${jsx_path} ${css_path}
-    return
+    local jsx_extension=$(existing_file_extension ${jsx_dir} tsx ts jsx js)
+    local css_extension=$(existing_file_extension ${css_dir} module.scss module.css scss css)
 
-    echo "import styles from '${css_import_path}';\n\ninterface Props {\n  children: React.ReactNode;\n}\n\n/** \n *\n * @param props.children - \n * @return\n */\nexport default function ${component_name}({ children }: Props) {\n  return (\n    <div className={styles.root}>\n      \n    </div>\n  );\n}" >> ${tsx_path}
-    echo ".root {\n  \n}" >> ${css_path}
+    echo "import styles from '${css_import_path}';\n\ninterface Props {\n  children: React.ReactNode;\n}\n\n/** \n *\n * @param props.children - \n * @return\n */\nexport default function ${component_name}({ children }: Props) {\n  return (\n    <div className={styles.root}>\n      \n    </div>\n  );\n}" >> "${jsx_dir}/${file_name}.${jsx_extension}"
+    echo ".root {\n  \n}" >> "${css_dir}/${file_name}.${css_extension}"
     printf $TEXT_SUCCESS "${component_name}コンポーネントを追加しました"
+    ;;
+  ### [react nextroute] Nextのルーティングを追加する
+  nextroute )
+    read_if_empty "Route Path" ${args[2]} && local route_path=${FUNCTION_REPLY}
+    local component_name="$(text_to_camelcase ${route_path} --split="/" --upper)Page"
+    echo "${COLOR_INFO_DARK}Component Name: ${COLOR_RESET}${component_name}"
+    read_if_empty "Page Title" ${args[title]} && local title=${FUNCTION_REPLY}
+
+    react_project_props --next-route="${route_path}" && local -A next=(${(kv)FUNCTION_REPLY})
+    [ -e ${next[jsx_file]} ] && throw "${next[jsx_file]}はすでに存在します"
+
+
+    local jsx_source=""
+    if [ -n "${args[copy]}" ]; then
+      local component_base_path="${next[components_root]}/${args[copy]%%/*}"
+      local template_name="$(text_to_camelcase "${args[copy]}" --split="/" --upper)Page"
+      local template_jsx_file="${component_base_path}/${template_name}.tsx"
+      [ ! -e ${template_jsx_file} ] && throw "${template_jsx_file}が見つかりませんでした" 2> /dev/null
+      local jsx_source=$(cat ${template_jsx_file} | sed "s/\(import styles from '\.\/\)[^']*/\1$(basename ${next[css_file]})/" | sed "s/\(export default function \)[^\(]*/\1${next[component_name]}/")
+    fi
+
+    # ファイル書き込み
+    file_write "${next[jsx_file]}"  ${jsx_source:-"import styles from './$(basename ${next[css_file]})';\n\ninterface Props {\n\n}\n\n/** \n * ${title}ページ\n * @param props.* - \n * @return\n */\nexport default function ${component_name}({}: Props) {\n  return (\n    <div className={styles.root}>\n      <h1>${title}</h1>\n    </div>\n  );\n}"}
+    file_write "${next[css_file]}" ".root {\n  \n}"
+    file_write "${next[route_file]}" "import ${next[component_name]} from '${next[component_import_path]}';\n\nexport const metadata = {\n  title: '${title}',\n};\n\nexport default function Page() {\n  return <${next[component_name]} />;\n}"
+    printf $TEXT_SUCCESS "ルーティング${route_path}に${next[component_name]}コンポーネントを追加しました"
     ;;
   * )
     exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null

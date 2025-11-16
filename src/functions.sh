@@ -1,27 +1,6 @@
 # スクリプト関数ファイル
 # 汎用定数が読み込まれている前提の関数あり
 
-# マルチバイトを2文字として文字丸めする
-# @param string 文字列
-# @param number 最大文字数
-text_ellipses() {
-  local text=""
-  local count=0
-  for (( i=0; i<${#1}; i++ )); do
-    local char=${1:$i:1}
-    echo -n $char
-
-    text+=$char
-    if expr "$char" : "^[ -~]$" &> /dev/null; then
-      count=$(( $count + 1 ))
-    else
-      count=$(( $count + 2 ))
-    fi
-    [ $count -ge $2 ] && break
-  done
-  echo $text
-}
-
 # 環境名の入力揺れを吸収する
 # @param string 環境名
 # @returns string 環境名 [local: ローカル, staging: ステージング, production: 本番]
@@ -31,6 +10,30 @@ parse_environment() {
   staging|s ) echo 'staging';;
   * ) echo 'local';;
   esac
+}
+
+# パスを表示用のシンプルな形式に変換する
+# プロジェクト配下やホームディレクトリを解決する
+# @param string $@ 対象パス
+simple_path() {
+  local path=$1
+  if [[ "${path}" != /* ]]; then
+    # 相対パス
+    echo "${path}"
+    return
+  elif [[ -n "${PROJECT_DIR}" && "${path}" == "${PROJECT_DIR}"* ]]; then
+    # プロジェクト配下
+    local project_path=${path#${PROJECT_DIR}}
+    [ -z "${project_path}" ] && project_path='/'
+    echo "@${project_path}"
+    return
+  elif [[ "${path}" == "${HOME}"* ]]; then
+    # ホーム配下
+    echo "~${path#${HOME}}"
+    return
+  else
+    echo "${path}"
+  fi
 }
 
 # 引数とオプションを読み取り連想配列として返す
@@ -155,10 +158,10 @@ get_project_root() {
     echo ${git_root}
   else
     case ${current_dir} in
-    ${WORKSPACE}/* )
+    ${PROJECTS_DIR}/* )
       # ワークスペース配下ならとりあえず直下として扱う
-      local dir_name=$(echo ${current_dir} | sed -e "s|${WORKSPACE}/\([^/]*\).*$|\1|")
-      echo "${WORKSPACE}/${dir_name}"
+      local dir_name=$(echo ${current_dir} | sed -e "s|${PROJECTS_DIR}/\([^/]*\).*$|\1|")
+      echo "${PROJECTS_DIR}/${dir_name}"
       ;;
     * )
       echo ${current_dir}
@@ -459,6 +462,37 @@ print_heading() {
   echo ""
 }
 
+print_directory() {
+  local paths=(${@})
+  local target_dir=()
+
+  local project_root
+  for project_root in "${paths[@]}"; do
+    local prev_dir=(${target_dir})
+    target_dir=()
+
+    # ディレクトリ階層毎に出力
+    local depth=0
+    while [ -n "${project_root}" ]; do
+      local dir_name="${project_root%%/*}"
+      project_root="${project_root#*/}"
+      target_dir+=("${dir_name}")
+      depth=$((depth + 1))
+
+      if [[ "${dir_name}" != "${prev_dir[$depth]}" ]]; then
+        local text_color=${COLOR_MUTED}
+        local indent=$(text_repeat ${depth} "  ")
+
+        if [ -z ${project_root} ]; then
+          echo "${indent}${dir_name}"
+        else
+          printf $TEXT_MUTED "${indent}${dir_name}/"
+        fi
+      fi
+    done
+  done
+}
+
 # ヘルプメッセージを表示する
 # @param string $1 対象ソースコード (未指定でスクリプトファイル全体)
 # @option --action=<string> アクション名 (未指定ですべてのヘルプを表示)
@@ -535,6 +569,24 @@ read_project_prop() {
   FUNCTION_REPLY=${input}
 }
 
+# 文字列入力
+# @param string $1 項目名
+# @param string $2 デフォルト値 (空でない場合は入力しない)
+# @returns $FUNCTION_REPLY 入力値
+# @throws $EXIT_CODE_ERROR
+read_if_empty() {
+  echo -n "${COLOR_INFO_DARK}${1}:${COLOR_RESET} "
+  local input=${2}
+  if [ -z "${input}" ]; then
+    read input
+    if [ -z "${input}" ]; then
+      exit $EXIT_CODE_ERROR &> /dev/null
+    fi
+  else
+    echo "${input}"
+  fi
+  FUNCTION_REPLY=${input}
+}
 
 # デフォルト値ありの文字列入力
 # @param string $1 項目名
@@ -1001,6 +1053,99 @@ browser_set_input() {
   fi
 }
 
+# Reactのファイル構造を自動検出する
+# @returns map $FUNCTION_REPLY
+# @returns string $FUNCTION_REPLY[node_root] ノードディレクトリ
+# @returns string $FUNCTION_REPLY[components_root] コンポーネントディレクトリ
+# @returns string $FUNCTION_REPLY[router_root] ルーティングディレクトリ
+# @returns string $FUNCTION_REPLY[route_file] ルーティングファイル
+# @throws $EXIT_CODE_ERROR
+react_project_props() {
+  parse_arguments ${@}; local -A args=(${(kv)ARGUMENTS_REPLY})
+  local -A props=()
+
+  local node_root=$(node_root)
+  props[node_root]=${node_root}
+
+  # Next.js ルーティング追加
+  if [ -n "${args[next-route]}" ]; then
+    # ルーティングディレクトリ
+    props[router_root]="${node_root}/src/app"
+
+    local components_root="${node_root}/src/features"
+    [ ! -e ${components_root} ] && throw "featuresディレクトリが見つかりませんでした" 2> /dev/null
+    props[components_root]=${components_root}
+
+    props[route_file]="${props[router_root]}/${route_path}/page.tsx"
+
+    local component_base_path="${props[components_root]}/${args[next-route]%%/*}"
+    props[component_name]="$(text_to_camelcase "${args[next-route]}" --split="/" --upper)Page"
+    props[jsx_file]="${component_base_path}/${props[component_name]}.tsx"
+    props[css_file]="${component_base_path}/${props[component_name]}.module.css"
+    props[component_import_path]=$(echo "${props[jsx_file]}" | sed "s|^${props[node_root]}/src|@|" | sed "s/\.[a-z0-9]*$//")
+  else
+    # コンポーネントディレクトリ
+    local components_root="${node_root}/src/components"
+    [ ! -e ${components_root} ] && throw "componentsディレクトリが見つかりませんでした" 2> /dev/null
+    props[components_root]=${components_root}
+  fi
+
+  FUNCTION_REPLY=(${(kv)props})
+}
+
+# エラーを発生させてスクリプトの実行を中止する
+# @param string $1 エラーメッセージ
+# @param int $2 終了コード
+# @throws $EXIT_CODE_ERROR
+# @example [ -z "${some_required_var}" ] && throw 'Error' 2> /dev/null
+throw() {
+  printf $TEXT_DANGER "$1" >&1
+  exit ${2:-$EXIT_CODE_ERROR}
+}
+
+# 文字列を繰り返し出力する
+# @param int $1 繰り返し回数
+# @param string $2 繰り返す文字
+text_repeat() {
+  local count=$1
+  local char=$2
+  printf  "$2""%.s" {1..${1}}
+}
+
+# テキストをキャメルケースに変換する
+# @param string $1 変換するテキスト
+# @param string $2 区切り文字 (デフォルトはスラッシュ `/`)
+# @option --upper 先頭を大文字にする
+# @option --split=<string> 追加の区切り文字を指定する (デフォルトはスペース・ハイフン・アンダースコア)
+# @returns string キャメルケースに変換されたテキスト
+text_to_camelcase() {
+  parse_arguments ${@}; local -A args=(${(kv)ARGUMENTS_REPLY})
+  local delimiter=${args[split]}
+  [ -n "${args[upper]}" ] && local awk_exclusion='' || local awk_exclusion='NR==1 {print tolower($0)} NR>1 '
+  echo ${args[1]} | tr -d '\n' | tr "${delimiter} -_" '\n' | awk ${awk_exclusion}'{print toupper(substr($0,1,1)) tolower(substr($0,2))}' | tr -d '\n'
+}
+
+# マルチバイトを2文字として文字丸めする
+# @param string 文字列
+# @param number 最大文字数
+text_ellipses() {
+  local text=""
+  local count=0
+  for (( i=0; i<${#1}; i++ )); do
+    local char=${1:$i:1}
+    echo -n $char
+
+    text+=$char
+    if expr "$char" : "^[ -~]$" &> /dev/null; then
+      count=$(( $count + 1 ))
+    else
+      count=$(( $count + 2 ))
+    fi
+    [ $count -ge $2 ] && break
+  done
+  echo $text
+}
+
 # 特定の文字列以降を取得する
 # @param string $1 開始文字列
 # @param string $2 対象文字列
@@ -1136,10 +1281,40 @@ array_join() {
   done < <(echo "${@:2}")
 }
 
+# 文字列を改行区切りで配列に分割
+# @param string $@ 分割する文字列
+# @returns array $FUNCTION_REPLY 分割された配列
+# @example array_split "one\ntwo" && local list=(${FUNCTION_REPLY})
 array_split() {
+  FUNCTION_REPLY=()
   IFS=$'\n'
-  local -a branches=(${BASE_BRANCH} ${main} $(git branch --format="%(refname:short)	%(subject)" --sort=-authordate ${option} | column -t -s $'\t' | head -10 ))
+  local line
+  while read -r line; do
+    FUNCTION_REPLY+=("${line}")
+  done <<< "$@"
   IFS=$DEFAULT_IFS
+}
+
+array_contains() {
+  local element=$1
+  shift
+  for item in "$@"; do
+    if [ "$item" = "$element" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ディレクトリを作成してファイルを書き込む
+# @param string $1 書き込むファイルのパス
+# @param string $2 書き込む内容
+file_write() {
+  # プロジェクト外に書き込みする場合はエラー
+  [ -z $(echo $1 | grep -E "^$(get_project_root)") ] && throw "Can not write file: ${1}" 2> /dev/null
+
+  mkdir -p $(dirname $1)
+  echo ${2} >> ${1}
 }
 
 # 文字列の行数を取得

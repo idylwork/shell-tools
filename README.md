@@ -50,6 +50,17 @@ ws expj # example_project に移動
 
 #### 導入
 
+##### 自動インストール
+[install.sh]を実行することで、自動的に`~/.zsh`配下に関連ファイルがコピーされます。
+```sh
+./install.sh
+```
+
+`~/.zsh`配下にソースコードを配置されます。
+`~/.zshrc`に以下のコードが追加され、シェル起動時に [index.sh](./index.sh) が読み込まれて各コマンドが追加されるようになります。
+Homebrewを使って依存ライブラリをインストールします。Homebrewをインストールしていない場合は、あらかじめインストールしておいてください。
+
+##### 手動インストール
 [index.sh](./index.sh) を読み込むことで各コマンドが追加されるので、`~/.zshrc`などに以下のコードを追加します。
 .zshrc に関する他の設定は[zshrc.sample](./sample/zshrc.sample)を参照してください。
 
@@ -92,7 +103,7 @@ to help
 以下コマンドで差分を表示できます。
 
 ```sh
-to git init
+to git install
 ```
 
 #### 利用
@@ -163,7 +174,7 @@ itunes_library = ~/Music/iTunes /Music/iTunes
 以下のライブラリを導入しています。
 
 - git
-- nodenv
+- volta
 
 ## シェルスニペット
 
