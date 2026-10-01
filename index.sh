@@ -1,3 +1,4 @@
+# Toolスクリプト周辺コードの読み込み
 # 用例: .zshrcファイルに組み込み
 # [ -f ~/.zsh/index.sh ] && source ~/.zsh/index.sh
 

@@ -185,5 +185,5 @@ itunes_library = ~/Music/iTunes /Music/iTunes
 sudo find . -mmin -60 -type f | xargs ls -l {}
 
 : 代替treeコマンド
-pwd; find . | sort | sed '1d;s/^\.//;s/\/\([^/]*\)$/|--\1/;s/\/[^/|]*/|  /g' && echo -e "\n$(find . -type d | wc -l) directories, $(find . -type f | wc -l) files"
+pwd; find . | sort | awk -F'/' 'NR>1{ind=""; for(i=2;i<NF;i++) ind=ind"  "; print ind "- " $NF}' && echo -e "\n$(find . -type d | wc -l | tr -d ' ') directories, $(find . -type f | wc -l | tr -d ' ') files"
 ```

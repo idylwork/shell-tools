@@ -39,6 +39,12 @@ if [[ -n "${args[help]}" ]]; then
   return
 fi
 
+# 環境設定
+local env_ini="${SCRIPT_DIR}/config/env.ini"
+[ -f "${env_ini}" ] || throw "config/env.ini がありません。sample/config/env.ini.sample を配置してください。"
+source <(parse_ini ${env_ini} | grep -v '^ *#' | sed "s/^ */local -r /g")
+local -r DEST_DIR="${PROJECTS_DIR}/dist"
+
 # プロジェクト定数
 local -r PROJECT_DIR=$(get_project_root)
 local -r PROJECT_NAME=$(basename ${PROJECT_DIR})
@@ -150,6 +156,11 @@ cp )
   rsync -rcv $args[1] $args[2] --exclude='.DS_Store' --exclude='/.git' -C --filter=":- .gitignore"
 ;;
 
+## [tree] ファイル階層を表示
+tree )
+  tree ${@:2}
+;;
+
 ## [rm] ファイルやディレクトリをゴミ箱に入れる
 rm )
   local trash_dir="${HOME}/.Trash"
@@ -213,11 +224,11 @@ rm )
 
 ## [edit] スクリプトと設定の編集
 edit )
-  code -n $SCRIPT_DIR
+  open -a "$APP_EDITOR" $SCRIPT_DIR
 
   ## --init スクリプトの初期設定
   if [ -n "$args[init]" ]; then
-    code --diff ${SCRIPT_DIR}/sample/zshrc.sample ~/.zshrc
+    open -a "$APP_EDITOR" ${SCRIPT_DIR}/sample/zshrc.sample ~/.zshrc
     echo "SCRIPT: ${SCRIPT_DIR}"
 
     local filepaths=($(find ${SCRIPT_DIR}/sample/config -type f))
@@ -339,7 +350,6 @@ backup )
     local path_key=${path_keys[$i]}
     local mode='Add only'
     local rsync_options=('-aru' "--exclude='/.git'" "--exclude='.DS_Store'")
-    rsync_options+=('--iconv=utf-8-mac,utf-8')
 
     # _archive で終わるキーの場合は差分削除せず追加と更新のみ行う
     if [[ "${path_key}" != *_archive ]]; then
@@ -466,22 +476,32 @@ note )
 ;;
 
 ## [doc] Docker関連のコマンド
-doc|docker )
+doc | docker )
+  # 起動していなければ Docker Desktop を起動
+  if ! pgrep -f "Docker Desktop" > /dev/null; then
+    printf $TEXT_INFO 'Starting Docker Desktop...'
+    open -a Docker
+    # 起動完了まで少し待つ
+    while ! pgrep -f "Docker Desktop" > /dev/null 2>&1; do
+      sleep 2
+    done
+  fi
+
   case $args[1] in
   ### [doc restart] Dockerを強制再起動
   restart )
-    killall Docker && open /Applications/Docker.app
+    killall Docker && ope -a Docker
     printf $TEXT_SUCCESS "Docker will restart."
     ;;
   ### [doc ls] Dockerの動作状況を確認
-  ls|list|'' )
+  ls | list| '' )
     docker ps -a --format "table 　{{.Names}} ({{.ID}})\t{{.Status}}\t{{.Size}}" \
      | sed -r "s/^　(.* Created .*)$/🌱${COLOR_SUCCESS}\1${COLOR_RESET}/g" \
      | sed -r "s/^　(.* Up .*)$/🌳\1/g" \
      | sed -r "s/^　(.* Exited .*)$/　${COLOR_MUTED}\1${COLOR_RESET}/g"
     ;;
   ### [doc clean] 起動中のコンテナをすべて停止する
-  clean|sweep )
+  clean | sweep )
     local container_ids=$(docker ps -q)
     if [ -n "$container_ids" ]; then
       local count=$(docker stop $(docker ps -q) | line_count)
@@ -512,13 +532,29 @@ doc|docker )
     printf $TEXT_INFO "Start connecting on ${container}... (docker compose exec -it ${container} bash --login)"
     docker compose exec -it -e PS1="\[\e[1;32m\][docker:${container}] \[\e[0;32m\]\W\[\e[m\] " ${container} bash --login
     ;;
+  ### [doc reset] カレントディレクトリのコンテナのボリュームを削除する
+  reset )
+    printf $TEXT_MUTED "$ docker compose down --volumes"
+    docker compose down --volumes
+
+    printf $TEXT_MUTED "$ docker compose up -d"
+    docker compose up -d
+    ;;
   ### [doc destroy] カレントディレクトリのコンテナをイメージやボリュームを含めて削除する
   destroy )
     printf $TEXT_WARNING "Would you like to delete docker containers?"
     read_confirmation
 
+    printf $TEXT_MUTED "$ docker compose down --rmi all --volumes --remove-orphans"
     docker compose down --rmi all --volumes --remove-orphans
     ;;
+  up )
+    printf $TEXT_MUTED "$ docker compose up -d"
+    docker compose up -d
+    ;;
+  * )
+    printf $TEXT_MUTED "$ docker compose ${@:2}"
+    docker compose ${@:2}
   esac
 ;;
 
@@ -544,8 +580,8 @@ git )
     ;;
   ### [git install] Git設定ファイルを編集する
   install )
-    code -n $SCRIPT_DIR
-    code --diff ${SCRIPT_DIR}/sample/gitconfig.sample $(git config --global --list --show-origin --name-only | head -1 | sed 's/file:\(.*\)\t.*/\1/')
+    open -a "$APP_EDITOR" $SCRIPT_DIR
+    open -a "$APP_EDITOR" ${SCRIPT_DIR}/sample/gitconfig.sample "$(git config --global --list --show-origin --name-only | head -1 | sed 's/file:\(.*\)\t.*/\1/')"
     ;;
   ### [git init] Gitリポジトリを新規構築する
   init )
@@ -1181,13 +1217,27 @@ db )
     cd_vagrant
     vagrant ssh -c "psql ${@:2}"
   else
-    local container="db"
+    local yaml_path=$(docker_compose_path)
+    if [ -z "${yaml_path}" ]; then
+      printf $TEXT_DANGER "Docker compose file not found."
+      exit $EXIT_CODE_ERROR &> /dev/null
+    fi
+
+    # コンテナ名
+    local container=$(grep "container_name: *" ${yaml_path} | grep 'db' | awk '{print $2}')
+    [ -z "${container}" ] && container='db'
+
     # docker-composeファイルから環境変数を読み取ってデータベースに接続する
     eval "local -A docker_env=($(docker_container_env))"
-    if [ -n "${docker_env[MYSQL_USER]}" ]; then
-      docker compose exec -it ${container} mysql -u ${docker_env[MYSQL_USER]} -D ${docker_env[MYSQL_DATABASE]} -p${docker_env[MYSQL_PASSWORD]}
-    elif [ -n "${docker_env[POSTGRES_USER]}" ]; then
-      docker compose exec -it ${container} psql -U ${docker_env[POSTGRES_USER]} -d ${docker_env[POSTGRES_DB]}
+
+    echo "docker exec -it ${container} mariadb -u ${docker_env[MARIADB_USER]} -D ${docker_env[MARIADB_DATABASE]} -p${docker_env[MARIADB_PASSWORD]}"
+
+    if [ -n "${docker_env[POSTGRES_USER]}" ]; then
+      docker exec -it ${container} psql -U ${docker_env[POSTGRES_USER]} -d ${docker_env[POSTGRES_DB]}
+    elif [ -n "${docker_env[MARIADB_USER]}" ]; then
+      docker exec -it ${container} mariadb -u ${docker_env[MARIADB_USER]} -D ${docker_env[MARIADB_DATABASE]} -p${docker_env[MARIADB_PASSWORD]}
+    elif [ -n "${docker_env[MYSQL_USER]}" ]; then
+      docker exec -it ${container} mysql -u ${docker_env[MYSQL_USER]} -D ${docker_env[MYSQL_DATABASE]} -p${docker_env[MYSQL_PASSWORD]}
     else
       printf $TEXT_INFO_DARK "Docker database setting not found."
       to doc bash ${container}
@@ -1298,7 +1348,7 @@ node | n )
     fi
 
     # エディタを開く
-    which code &> /dev/null && code ${node_root}
+    [ -d "$APP_EDITOR" ] && open -a "$APP_EDITOR" ${node_root}
   ;;
   ### [node version] VoltaでプロジェクトのNodeバージョンを固定
   version )
@@ -1451,6 +1501,17 @@ pmlog )
   fi
 ;;
 
+## [proxy] mitmproxy を起動する
+proxy )
+  printf $TEXT_INFO_DARK "Would you like to start mitmproxy?"
+  echo "  ${COLOR_INFO}Proxy Configure:${COLOR_RESET} Manual"
+  echo "  ${COLOR_INFO}Server:${COLOR_RESET} $(ipconfig getifaddr en0)"
+  echo "  ${COLOR_INFO}Port:${COLOR_RESET} 8080"
+  echo "  ${COLOR_INFO}Authentication:${COLOR_RESET} Off"
+  read_confirmation
+  mitmproxy -p 8080
+;;
+
 ## [telescope] Laravel Telescopeをブラウザで開く
 telescope )
   local browser_options=()
@@ -1459,7 +1520,7 @@ telescope )
 ;;
 
 ## [react <command>] React関連のコマンド群
-react )
+react | r )
   case ${args[1]} in
   ### [react component] Reactのコンポーネントファイルを作成する
   component )
@@ -1467,21 +1528,13 @@ react )
 
     react_project_props && local -A next=(${(kv)FUNCTION_REPLY})
 
-
-
-
-
     local components_dir="${node_root}/src/components"
     if [ ! -e $components_dir ]; then
       printf $TEXT_DANGER "componentsディレクトリが見つかりませんでした"
       return
     fi
 
-
-
     read_if_empty "Component Name" ${args[2]} && local component_name=${FUNCTION_REPLY}
-
-
 
     # コンポーネント単位でディレクトリが切られているかをディレクトリ数の比率で判断
     local jsx_count=$(find ${components_dir} -maxdepth 1 -type f -name "*.js" -o -name "*.jsx" -o -name "*.tsx" | wc -l)

@@ -378,16 +378,26 @@ node_root() {
   echo "${target_dir}"
 }
 
+# Docker Compose ファイルのパスを取得する
+docker_compose_path() {
+  local filepaths=("${PROJECT_DIR}/compose.yaml" "${PROJECT_DIR}/docker-compose.yml"
+    "compose.yaml" "docker-compose.yml")
+  local filepath
+  for filepath in "${filepaths[@]}"; do
+    if [ -f "${filepath}" ]; then
+      echo "${filepath}"
+      return
+    fi
+  done
+}
+
 # Dockerコンテナの環境変数を取り出す
 # 値やキーに空白を含む場合はevalを通す必要あり (zshの配列定義の仕様上、クオートを無視して区切られてしまう)
 # @returns string 連想配列の中身
 # @example eval "local -A docker_env=($(docker_container_env))"
 docker_container_env() {
-  local yaml_path="${PROJECT_DIR}/docker-compose.yaml"
-  local -A environment=()
-
-  # grep -n 'environment:' ${yaml_path}
-  # grep -n 'environment:' ${yaml_path} |  tr -dc ' ' | wc -c
+  local yaml_path=$(docker_compose_path)
+  [ -z "${yaml_path}" ] && return
 
   local headings=($(grep -n 'environment:' ${yaml_path} | sed 's/:.*$//'))
   for heading in ${headings}; do
@@ -462,6 +472,19 @@ print_heading() {
   echo ""
 }
 
+# ファイルツリーを表示する
+tree() {
+  local target=${1:-.}
+
+  # treeを実行してみて、エラーだったら代替実行
+  if ! command tree "${target}" 2>/dev/null; then
+    pwd
+    find ${target} | sort | awk -F'/' 'NR>1{ind=""; for(i=2;i<NF;i++) ind=ind"  "; print ind "- " $NF}'
+    echo -e "\n$(find ${target} -type d | wc -l | tr -d ' ') directories, $(find ${target} -type f | wc -l | tr -d ' ') files"
+  fi
+}
+
+# ディレクトリ階層を出力する
 print_directory() {
   local paths=(${@})
   local target_dir=()

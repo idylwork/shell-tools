@@ -11,16 +11,10 @@ local DEFAULT_IFS=$IFS
 local BROWSER_CURRENT_TAB_ID=
 
 # ファイルパス
-local -r PROJECTS_DIR="${HOME}/Projects"
 local -r SCRIPT_DIR="${HOME}/.zsh"
-local -r EXPORT_DIR="${HOME}/Dropbox/Settings/Shell/zsh"
 local -r TOOL_SCRIPT="${SCRIPT_DIR}/src/tool.sh"
 local -r FUNCTIONS_PATH="${SCRIPT_DIR}/src/functions.sh"
-local -r DEST_DIR="${PROJECTS_DIR}/dist"
 local -r PROJECTS_INI="${SCRIPT_DIR}/config/projects.ini"
-
-# アプリケーションパス
-local -r APP_GIT_CLIENT="/Applications/GitUp.app"
 
 # 出力文字色 (sedに対応するため\eではなく\x1bを使用)
 local -r COLOR_RESET="\x1b[m"
