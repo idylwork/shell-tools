@@ -77,8 +77,19 @@ zstyle ':zle:*' word-style unspecified
 # Ctrl+sのロック, Ctrl+qのロック解除を無効にする
 setopt no_flow_control
 
-# プロンプトを2行で表示、時刻を表示
+# 左プロンプト
 PROMPT='%{${fg[cyan]}%}%~ %{${reset_color}%}'
+
+# 右プロンプト
+autoload -Uz vcs_info
+setopt prompt_subst
+zstyle ':vcs_info:git:*' check-for-changes true
+zstyle ':vcs_info:git:*' stagedstr "%F{yellow}!"
+zstyle ':vcs_info:git:*' unstagedstr "%F{red}+"
+zstyle ':vcs_info:*' formats "%F{green}%c%u[%b]%f"
+zstyle ':vcs_info:*' actionformats '[%b|%a]'
+precmd () { vcs_info }
+RPROMPT='${vcs_info_msg_0_}'
 
 # 補完後、メニュー選択モードになり左右キーで移動が出来る
 zstyle ':completion:*:default' menu select=2
@@ -109,18 +120,6 @@ zstyle ":chpwd:*" recent-dirs-default true
 # 複数ファイルのmv 例　zmv *.txt *.txt.bk
 autoload -Uz zmv
 alias zmv='noglob zmv -W'
-
-# Git設定
-RPROMPT="%{${fg[blue]}%}[%~]%{${reset_color}%}"
-autoload -Uz vcs_info
-setopt prompt_subst
-zstyle ':vcs_info:git:*' check-for-changes true
-zstyle ':vcs_info:git:*' stagedstr "%F{yellow}!"
-zstyle ':vcs_info:git:*' unstagedstr "%F{red}+"
-zstyle ':vcs_info:*' formats "%F{green}%c%u[%b]%f"
-zstyle ':vcs_info:*' actionformats '[%b|%a]'
-precmd () { vcs_info }
-RPROMPT=$RPROMPT'${vcs_info_msg_0_}'
 
 # Docker
 alias doc='docker compose'

@@ -3,7 +3,7 @@
 # @exit 0 成功
 # @exit 1 失敗
 # @exit 2 オプションや値が不正
-# @exit $EXIT_CODE_WITH_ADDITION メインシェルで追加処理を実行
+# @exit $EXIT_CODE_PARENT_ACTION メインシェルで追加処理を実行
 # @exit 27 アクションが見つからない
 to() {
 # 定数の読み込み (関数内ローカル)
@@ -219,11 +219,11 @@ rm )
     return
   fi
   # ディレクトリ移動はサブシェル外で実行する
-  exit $EXIT_CODE_WITH_ADDITION &> /dev/null
+  exit $EXIT_CODE_PARENT_ACTION &> /dev/null
 ;;
 
-## [edit] スクリプトと設定の編集
-edit )
+## [config] スクリプトと設定の編集
+config )
   open -a "$APP_EDITOR" $SCRIPT_DIR
 
   ## --init スクリプトの初期設定
@@ -253,7 +253,7 @@ refresh )
     printf $TEXT_SUCCESS "Tool script is refreshing..."
 
     # 再読み込みはサブシェル外で実行する
-    exit $EXIT_CODE_WITH_ADDITION &> /dev/null
+    exit $EXIT_CODE_PARENT_ACTION &> /dev/null
   fi
 ;;
 
@@ -399,7 +399,7 @@ timer )
   if [ -z "$args[1]" ]; then
     local start=$(date +%s)
 
-    printf $TEXT_INFO "Press Control + C to stop the timer."
+    printf $TEXT_INFO "Press ^C to stop the timer."
     while true; do
       local end=$(date +%s)
       local timestamp=$((${end} - ${start}))
@@ -457,6 +457,29 @@ timer )
     osascript -e "display notification \"${message}\" with title \"Tool Script\""
   ) &
   printf $TEXT_SUCCESS "The timer has been set. (${message})"
+;;
+
+## [dns <host>] DNSレコードを監視して伝搬を通知する
+dns )
+  [ -z "${args[1]}" ] && exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
+
+  while true; do
+    local answer=$(command dig @8.8.8.8 "${args[1]}" ANY +noall +answer 2> /dev/null | sed '/^;/d;/^$/d')
+    local current=$(printf '%s\n' "${answer}" | awk 'NF { $2 = ""; print }' | sed 's/  */ /g' | sort)
+    if [[ ! -v prev ]]; then
+      local prev=${current}
+      printf $TEXT_INFO "$(date '+%H:%M:%S') Starting to watch ${args[1]} DNS records... Press ^C to stop."
+      echo ${answer}
+    elif [ "${current}" != "${prev}" ]; then
+      printf $TEXT_SUCCESS "$(date '+%H:%M:%S') Changed"
+      echo ${answer}
+      osascript -e "display notification \"DNS changes have been detected for ${args[1]}.\" with title \"Tool Script\""
+      break
+    else
+      printf $TEXT_MUTED "$(date '+%H:%M:%S') No change"
+    fi
+    sleep 30
+  done
 ;;
 
 ## [note] メモファイルの表示
@@ -566,6 +589,11 @@ bash )
     printf $TEXT_INFO "Default container: ${container}"
   fi
   to doc bash ${container} ${@:3}
+;;
+
+## [edit] プロジェクトをIDEで開く
+edit )
+  open -a "${APP_EDITOR}" ${PROJECT_DIR}
 ;;
 
 ## [git] Gitクライアントを開く
@@ -881,7 +909,7 @@ mkdir )
     mkdir -p ${args[1]}
     printf $TEXT_SUCCESS "Successfully created directory."
     # ディレクトリ移動はサブシェル外で実行する
-    exit $EXIT_CODE_WITH_ADDITION &> /dev/null
+    exit $EXIT_CODE_PARENT_ACTION &> /dev/null
   fi
 ;;
 
@@ -1171,6 +1199,13 @@ sshkey )
   ssh ${ssh_name} "mkdir -p ~/.ssh; echo "${public_key}" >> ~/.ssh/authorized_keys"
 ;;
 
+## [minimal] プロンプトをシンプルな表示に切り替える
+minimal )
+  printf $TEXT_INFO "Minimal prompt mode toggled. (run again to revert)"
+  # プロンプト変更はサブシェル外で実行する
+  exit $EXIT_CODE_PARENT_ACTION &> /dev/null
+;;
+
 ## [vagrant] Vagrantを切り替え
 vagrant )
   cd_vagrant
@@ -1272,11 +1307,9 @@ node | n )
   local node_action=${args[1]}
   local node_args=(${@:3})
 
-  # VoltaのNodeのバージョンを.node-versionファイルから切り替える
-  # if [ -f ${node_root}/.node-version ]; then
-  #   local version=$(cat ${node_root}/.node-version)
-  #   volta install node@${version} --quiet
-  # fi
+  if [ -z "${node_root}" ]; then
+    throw "Package.json not found." &> /dev/null
+  fi
 
   # プロジェクトで使用しているパッケージマネージャを自動で判定
   if [ -f "${node_root}/package-lock.json" ]; then
@@ -1653,6 +1686,16 @@ swift )
     printf $TEXT_INFO "CSS3 : rgb(${red}, ${green}, ${blue})"
     printf $TEXT_INFO "Swift: Color(red: $(math_division ${red} 255 -d=${digits}), green: $(math_division ${green} 255 -d=${digits}), blue: $(math_division ${blue} 255 -d=${digits}))"
     ;;
+  ### [swift install] Debugビルドの .app を /Applications にインストールする
+  install )
+    local xcode=(${PROJECT_DIR}/*.xcworkspace(N/om[1]) ${PROJECT_DIR}/*.xcodeproj(N/om[1]))
+    local app_name=${args[2]:-${xcode[1]:t:r}}
+    local app=(~/Library/Developer/Xcode/DerivedData/${app_name// /_}-*/Build/Products/Debug/${app_name}.app(Nom[1]))
+    [ -d "$app" ] || throw "${app_name}.app が見つかりません" 2> /dev/null
+    rm -rf "/Applications/${app_name}.app"
+    ditto "$app" "/Applications/${app_name}.app"
+    printf $TEXT_SUCCESS "${app_name}.app をアプリケーションにインストールしました"
+    ;;
   clean )
     printf $TEXT_DANGER "Xcodeのキャッシュを削除します"
     read_confirmation
@@ -1666,30 +1709,6 @@ swift )
   * )
     exit $EXIT_CODE_WRONG_ARGUMENT &> /dev/null
   esac
-;;
-
-## [bing <message>] Bing AI Copilotを操作する
-bing )
-  local message=""
-  printf $TEXT_INFO "Bing AIへのメッセージを入力してください (空白行でEnterすると確定)"
-  local line
-  while true; do
-    read line
-    [ -z "${line}" ] && break
-    message+="${line}\n"
-  done
-
-  browser_open "https://copilot.microsoft.com" --skip
-  browser_javascript_element "#userInput" "element.click();"
-  sleep 0.5
-  browser_set_input "#userInput" "$(echo ${message})"
-  osascript -l JavaScript -e "function run(arguments) {
-    const se = Application('System Events');
-    se.keystroke('.');
-    se.keyCode(51);
-  }"
-  sleep 0.5
-  browser_javascript_element "[title=\"メッセージの送信\"]" "element.click();"
 ;;
 
 ## [browser] ブラウザに関する操作
@@ -1824,10 +1843,11 @@ $EXIT_CODE_WRONG_ARGUMENT )
   printf $TEXT_DANGER "Wrong argument or option."
   to ${1} --help
   ;;
-$EXIT_CODE_WITH_ADDITION )
+$EXIT_CODE_PARENT_ACTION )
   case $1 in
   refresh ) source $(to $@ --path) ;;
   mkdir | .. ) cd $(to $@ --path) &> /dev/null ;;
+  minimal ) [ "$PROMPT" = '$ ' ] && [ -z "$RPROMPT" ] && exec $SHELL || { PROMPT='$ '; RPROMPT=''; } ;;
   esac
   ;;
 $EXIT_CODE_ACTION_NOT_FOUND )

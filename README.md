@@ -77,7 +77,7 @@ source ~/.zshrc
 コマンドを使って設定ファイルを配置します。
 
 ```sh
-to edit --init
+to config --init
 ```
 
 #### 利用

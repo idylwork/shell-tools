@@ -371,7 +371,6 @@ node_root() {
   while [ ! -f "${target_dir}/package.json" ]; do
     target_dir=$(dirname "${target_dir}")
     if [ "${target_dir}" = "/" ]; then
-      printf $TEXT_DANGER "Package.json not found."
       exit $EXIT_CODE_ERROR &> /dev/null
     fi
   done
@@ -1088,6 +1087,7 @@ react_project_props() {
   local -A props=()
 
   local node_root=$(node_root)
+  [ -z "${node_root}" ] && throw "Package.json not found." &> /dev/null
   props[node_root]=${node_root}
 
   # Next.js ルーティング追加
